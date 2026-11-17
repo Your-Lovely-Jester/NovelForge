@@ -1,0 +1,120 @@
+diff --git a/lncrawl/commands/crawl/crawl.py b/lncrawl/commands/crawl/crawl.py
+index 3f35b7e..07d5add 100644
+--- a/lncrawl/commands/crawl/crawl.py
++++ b/lncrawl/commands/crawl/crawl.py
+@@ -33,6 +33,12 @@ def crawl(
+         metavar="N",
+         help="Download latest few chapters",
+     ),
++    range_chapters: Optional[str] = typer.Option(
++        None,
++        "--chapters",
++        metavar="SPEC",
++        help="Chapter serials to download, e.g. 19,31,82 or 1-20 or 1-5,12,40-44",
++    ),
+     resume: bool = typer.Option(
+         False,
+         "--resume",
+@@ -93,6 +99,12 @@ def crawl(
+         print("[red]Cannot use --resume and --refresh together[/red]")
+         raise typer.Exit(1)
+ 
++    if range_chapters and any(
++        value is not None for value in (range_all, range_first, range_last)
++    ):
++        print("[red]Cannot combine --chapters with --all, --first or --last[/red]")
++        raise typer.Exit(1)
++
+     # setup context
+     ctx.setup()
+ 
+@@ -149,11 +161,30 @@ def crawl(
+ 
+     # select chapters to download
+     chapters: List[str] = []
++    serials: Optional[List[int]] = None
++    if range_chapters:
++        try:
++            serials = parse_chapter_spec(range_chapters)
++        except ValueError as error:
++            print(f"[red]{error}[/red]")
++            raise typer.Exit(1)
++        beyond = [serial for serial in serials if serial > novel.chapter_count]
++        if beyond:
++            preview = ", ".join(str(value) for value in beyond[:5])
++            print(
++                f"[red]Chapter(s) {preview} exceed the {novel.chapter_count} available[/red]"
++            )
++            raise typer.Exit(1)
++        if not serials:
++            print("[red]No chapter numbers in --chapters[/red]")
++            raise typer.Exit(1)
++
+     if not non_interactive and all(
+         [
+             range_all is None,
+             range_first is None,
+             range_last is None,
++            range_chapters is None,
+         ]
+     ):
+         chapters = prompt_range_selection(novel)
+@@ -163,6 +194,7 @@ def crawl(
+             is_crawled=False if resume else None,
+             descending=bool(range_last),
+             limit=range_last or range_first,
++            serials=serials,
+         )
+     if not chapters:
+         if resume:
+@@ -257,3 +289,26 @@ def crawl(
+     if not non_interactive and prompt_open_artifact_folder():
+         cover_file = ctx.files.resolve(novel.cover_file)
+         open_folder(cover_file.parent / "artifacts")
++
++
++def parse_chapter_spec(spec: str) -> List[int]:
++    """Parse ``1-20``, ``19,31,82`` or a mixture into unique sorted serials."""
++    serials = set()
++    for chunk in spec.split(","):
++        chunk = chunk.strip()
++        if not chunk:
++            continue
++        if "-" in chunk:
++            start, _, end = chunk.partition("-")
++            start, end = start.strip(), end.strip()
++            if not (start.isdigit() and end.isdigit()):
++                raise ValueError(f"Invalid chapter range: {chunk}")
++            low, high = sorted((int(start), int(end)))
++            if high - low > 50_000:
++                raise ValueError(f"Chapter range is too large: {chunk}")
++            serials.update(range(low, high + 1))
++        elif chunk.isdigit():
++            serials.add(int(chunk))
++        else:
++            raise ValueError(f"Invalid chapter number: {chunk}")
++    return sorted(serials)
+diff --git a/lncrawl/services/chapters.py b/lncrawl/services/chapters.py
+index d61ca9b..d2e9630 100644
+--- a/lncrawl/services/chapters.py
++++ b/lncrawl/services/chapters.py
+@@ -113,6 +113,7 @@ class ChapterService:
+         is_crawled: Optional[bool] = None,
+         descending: bool = False,
+         limit: Optional[int] = None,
++        serials: Optional[Iterable[int]] = None,
+     ) -> List[str]:
+         with ctx.db.session() as sess:
+             stmt = sq.select(Chapter.id)
+@@ -122,6 +123,11 @@ class ChapterService:
+                 stmt = stmt.where(Chapter.volume_id == volume_id)
+             if is_crawled is not None:
+                 stmt = stmt.where(sq.col(Chapter.is_done).is_(is_crawled))
++            if serials is not None:
++                serials = list(serials)
++                if not serials:
++                    return []
++                stmt = stmt.where(sq.col(Chapter.serial).in_(serials))
+             if descending:
+                 stmt = stmt.order_by(sq.col(Chapter.serial).desc())
+             else:

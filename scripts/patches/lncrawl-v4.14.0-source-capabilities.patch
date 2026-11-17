@@ -1,0 +1,32 @@
+diff --git a/lncrawl/services/sources/service.py b/lncrawl/services/sources/service.py
+index 006959a..db112ad 100644
+--- a/lncrawl/services/sources/service.py
++++ b/lncrawl/services/sources/service.py
+@@ -195,11 +195,26 @@ class Sources:
+         # add to index if not available
+         name = crawler.__name__
+         cid = getattr(crawler, "__id__")  # crawler id
++        local = create_crawler_info(crawler)
+         if cid in self._index.crawlers:
+             info = self._index.crawlers[cid]
++            # The published index records the upstream crawler's capabilities. A local
++            # checkout may have been patched (new domain, search support), so take those
++            # flags from the module that is actually loaded while keeping the indexed
++            # version for tier precedence.
++            info = info.model_copy(
++                update={
++                    "base_urls": local.base_urls,
++                    "has_mtl": local.has_mtl,
++                    "has_manga": local.has_manga,
++                    "can_login": local.can_login,
++                    "can_search": local.can_search,
++                    "request_rate_limit": local.request_rate_limit,
++                }
++            )
+         else:
+             logger.info(f"Found non-indexed crawler: {name}")
+-            info = create_crawler_info(crawler)
++            info = local
+             self._index.crawlers[cid] = info
+ 
+         tier = getattr(crawler, "tier", LEGACY)

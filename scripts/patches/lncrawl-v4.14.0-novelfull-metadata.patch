@@ -1,0 +1,21 @@
+--- a/sources/en/n/novelfull.py
++++ b/sources/en/n/novelfull.py
+@@ -16,6 +16,18 @@
+         "https://novelfull.net/",
+     ]
+ 
++    # novelfull.net moved the visible title to `h1.tit` (the template only knew
++    # `h3.title`) and its author block is under `.m-info .item`, so the
++    # template fell back to `og:title` (with a site suffix) and found no author.
++    novel_title_selector = "h1.tit, h3.title"
++    novel_author_selector = (
++        ".m-info .item a[href*='/author/'], "
++        ".info .item a[href*='/author/'], "
++        ".info a[href*='/a/'], "
++        ".info a[href*='/au/'], "
++        ".info a[href*='author']"
++    )
++
+     def initialize(self) -> None:
+         self.cleaner.bad_css.update(
+             [

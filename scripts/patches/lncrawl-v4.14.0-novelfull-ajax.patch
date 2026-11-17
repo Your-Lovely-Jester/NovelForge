@@ -1,0 +1,79 @@
+diff --git a/sources/en/n/novelfull.py b/sources/en/n/novelfull.py
+index 437214a..05deabf 100644
+--- a/sources/en/n/novelfull.py
++++ b/sources/en/n/novelfull.py
+@@ -1,6 +1,9 @@
+ # -*- coding: utf-8 -*-
+ import logging
++from typing import Iterable, Optional
+ 
++from lncrawl.core import Novel, PageSoup, Volume
++from lncrawl.exceptions import LNException
+ from lncrawl.templates.novelfull import NovelFullTemplate
+ 
+ logger = logging.getLogger(__name__)
+@@ -20,3 +23,64 @@ class NovelFullCrawler(NovelFullTemplate):
+                 'img[src*="proxy?container=focus"]',
+             ]
+         )
++
++    def select_chapter_tags(
++        self,
++        tag: PageSoup,
++        novel: Novel,
++        volume: Optional[Volume] = None,
++    ) -> Iterable[PageSoup]:
++        # novelfull.net renders the first catalogue page and then serves the rest
++        # through /ajax-chapter-list. The old template only knows the numeric id
++        # on #rating and the pre-rendered ul.list-chapter, so it finds neither.
++        box = tag.select_one("#list-chapter[data-list-url]")
++        novel_id = tag.select_one("#truyen-id")
++        total_page = tag.select_one("#total-page")
++        if not box or not novel_id or not total_page:
++            return super().select_chapter_tags(tag, novel, volume)
++
++        novel_id_value = (novel_id.get("value") or "").strip()
++        total_page_value = (total_page.get("value") or "").strip()
++        if not novel_id_value or not total_page_value:
++            return super().select_chapter_tags(tag, novel, volume)
++
++        try:
++            total_pages = int(total_page_value)
++            advertised = int((box.get("data-total-chapters") or "0").strip() or "0")
++        except ValueError:
++            return super().select_chapter_tags(tag, novel, volume)
++
++        list_url = (box.get("data-list-url") or "/ajax-chapter-list").strip()
++        origin = self.scraper.origin.rstrip("/")
++
++        anchors = []
++        for page in range(1, total_pages + 1):
++            url = f"{origin}{list_url}?novelId={novel_id_value}&page={page}"
++            payload = self.scraper.get_json(url)
++            html = payload.get("html") if isinstance(payload, dict) else None
++            if not html:
++                raise LNException(
++                    f"NovelFull chapter list page {page}/{total_pages} returned no rows"
++                )
++
++            soup = self.scraper.make_soup(html)
++            rows = soup.select("a.con[href]")
++            if not rows:
++                raise LNException(
++                    f"NovelFull chapter list page {page}/{total_pages} parsed as empty"
++                )
++            anchors.extend(rows)
++
++        if advertised and len(anchors) < advertised:
++            raise LNException(
++                f"NovelFull chapter list is short: {len(anchors)} of "
++                f"{advertised} advertised chapter(s) from {total_pages} page(s)"
++            )
++
++        logger.info(
++            "NovelFull catalogue: %s chapter(s) from %s page(s)", len(anchors), total_pages
++        )
++
++        # The links are relative and resolve against the novel page, which is
++        # where lncrawl already is.
++        return anchors

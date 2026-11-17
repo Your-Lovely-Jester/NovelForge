@@ -1,0 +1,128 @@
+diff --git a/sources/en/n/novelping.py b/sources/en/n/novelping.py
+new file mode 100644
+index 0000000..d51d872
+--- /dev/null
++++ b/sources/en/n/novelping.py
+@@ -0,0 +1,122 @@
++# -*- coding: utf-8 -*-
++import html as html_escape
++import logging
++from urllib.parse import quote
++
++from lncrawl.core import Chapter, LegacyCrawler, Volume
++from lncrawl.exceptions import LNException
++
++logger = logging.getLogger(__name__)
++
++
++class NovelPingCrawler(LegacyCrawler):
++    base_url = "https://novelping.com/"
++    language = "en"
++    has_mtl = False
++    can_search = False
++
++    def read_novel_info(self):
++        soup = self.get_soup(self.novel_url)
++
++        title = soup.select_one(
++            'meta[property="og:novel:novel_name"], h1'
++        )
++        if title:
++            self.novel_title = title.get("content") or title.text
++            self.novel_title = self.novel_title.strip()
++        logger.info("Novel title: %s", self.novel_title)
++
++        image = soup.select_one('meta[property="og:image"]')
++        if image and image.get("content"):
++            self.novel_cover = self.absolute_url(image["content"])
++        logger.info("Novel cover: %s", self.novel_cover)
++
++        author = soup.select_one('meta[property="og:novel:author"]')
++        if author and author.get("content"):
++            self.novel_author = author["content"].strip()
++        else:
++            link = soup.select_one('a[href*="/author/"]')
++            if link:
++                self.novel_author = link.text.strip()
++        logger.info("Novel author: %s", self.novel_author)
++
++        tags = []
++        for a in soup.select('a[href*="/novelping-genres/"]'):
++            value = a.text.strip()
++            if value and value not in tags:
++                tags.append(value)
++        self.novel_tags = tags
++
++        description = soup.select_one("#novel-description-content")
++        if description:
++            paragraphs = [
++                p.get_text(" ", strip=True)
++                for p in description.select("p")
++            ]
++            if not paragraphs:
++                paragraphs = [description.get_text(" ", strip=True)]
++            self.novel_synopsis = "\n\n".join(p for p in paragraphs if p)
++        if not self.novel_synopsis:
++            meta = soup.select_one('meta[property="og:description"]')
++            if meta and meta.get("content"):
++                self.novel_synopsis = meta["content"].strip()
++
++        novel_id = soup.select_one("#rating[data-novel-id]")
++        if not novel_id or not novel_id.get("data-novel-id"):
++            raise LNException("Novel id not found")
++
++        archive_url = "%s/ajax/chapter-archive?novelId=%s" % (
++            self.scraper.origin.rstrip("/"),
++            quote(novel_id["data-novel-id"], safe=""),
++        )
++        archive = self.get_soup(archive_url)
++
++        seen = set()
++        template = archive.select_one("template[data-chapter-item-template]")
++        scope = template or archive
++        for a in scope.select("li[data-chapter-item] a[href]"):
++            url = self.absolute_url(a["href"])
++            if url in seen:
++                continue
++            seen.add(url)
++
++            chap_id = len(self.chapters) + 1
++            vol_id = (chap_id - 1) // 100 + 1
++            if len(self.chapters) % 100 == 0:
++                self.volumes.append(Volume(id=vol_id))
++            self.chapters.append(
++                Chapter(
++                    id=chap_id,
++                    volume=vol_id,
++                    title=(a.get("title") or a.text).strip(),
++                    url=url,
++                )
++            )
++
++        if not self.chapters:
++            raise LNException("No chapters found in the archive")
++
++        logger.info("Novel chapters: %s", len(self.chapters))
++
++    def download_chapter_body(self, chapter):
++        soup = self.get_soup(chapter["url"])
++
++        content = soup.select_one("#chr-content")
++        if not content:
++            return ""
++
++        paragraphs = []
++        for p in content.select("p"):
++            text = p.get_text(" ", strip=True).replace("\xa0", " ").strip()
++            if text:
++                paragraphs.append(f"<p>{html_escape.escape(text)}</p>")
++
++        if not paragraphs:
++            text = content.get_text("\n", strip=True)
++            paragraphs = [
++                f"<p>{html_escape.escape(line.strip())}</p>"
++                for line in text.splitlines()
++                if line.strip()
++            ]
++
++        return "\n".join(paragraphs)

@@ -1,0 +1,14 @@
+# NF-060: paths that must not leave the private development tree.
+# `git archive` / export-ignore keeps saved-page fixtures, internal backlog
+# history and local build inputs out of any source bundle. The binary installer
+# never contains these paths in the first place; scripts/check-personal-data.sh
+# proves the binary has no fixture prose.
+scripts/fixtures export-ignore
+src-tauri/tests/fixtures export-ignore
+docs/SOURCE_PIPELINE_BACKLOG.md export-ignore
+docs/measurements export-ignore
+.github export-ignore
+node_modules export-ignore
+dist export-ignore
+src-tauri/target export-ignore
+scripts/__pycache__ export-ignore

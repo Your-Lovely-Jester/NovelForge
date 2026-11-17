@@ -1,0 +1,126 @@
+diff --git a/sources/en/d/divinedaolibrary.py b/sources/en/d/divinedaolibrary.py
+index 1f9478e..b95b26f 100644
+--- a/sources/en/d/divinedaolibrary.py
++++ b/sources/en/d/divinedaolibrary.py
+@@ -1,4 +1,5 @@
+ # -*- coding: utf-8 -*-
++import html as html_escape
+ import logging
+ 
+ from lncrawl.core import Chapter, LegacyCrawler, Volume
+@@ -12,27 +13,64 @@ class DivineDaoLibrary(LegacyCrawler):
+     def read_novel_info(self):
+         soup = self.get_soup(self.novel_url)
+ 
+-        possible_title = soup.select_one("article header .entry-title")
+-        self.novel_title = possible_title.text.strip()
++        possible_title = soup.select_one(
++            "h1.story__identity-title, article header .entry-title"
++        )
++        if possible_title:
++            self.novel_title = possible_title.text.strip()
+         logger.info("Novel title: %s", self.novel_title)
+ 
+-        possible_image = soup.select_one("article .entry-content img")
++        possible_image = soup.select_one('meta[property="og:image"]')
+         if possible_image:
+-            self.novel_cover = self.absolute_url(possible_image["src"])
++            self.novel_cover = self.absolute_url(possible_image["content"])
++        else:
++            image = soup.select_one(".story__identity img, article .entry-content img")
++            if image:
++                self.novel_cover = self.absolute_url(image["src"])
+         logger.info("Novel cover: %s", self.novel_cover)
+ 
+-        for h3 in soup.select("article .entry-content h3"):
+-            text = h3.text.strip()
+-            if text.startswith("Author"):
+-                self.novel_author = text[len("Author:") :].strip()
+-                break
++        author = soup.select_one(
++            '.story__identity-meta a.author, a[rel="author"], a[href*="/author/"]'
++        )
++        if author:
++            self.novel_author = author.text.strip()
++        else:
++            for h3 in soup.select(".story__summary h3, article .entry-content h3"):
++                text = h3.text.strip()
++                if text.startswith("Author"):
++                    self.novel_author = text.split(":", 1)[-1].strip()
++                    break
+         logger.info("Novel author: %s", self.novel_author)
+ 
+-        soup.select(".entry-content ul li span a")
++        tags = []
++        for a in soup.select('a[href*="/genre/"], a[href*="/tag/"]'):
++            value = a.text.strip()
++            if value and value not in tags:
++                tags.append(value)
++        self.novel_tags = tags
++
++        summary = soup.select_one(".story__summary")
++        if summary:
++            paragraphs = [
++                p.get_text(" ", strip=True) for p in summary.select("p")
++            ]
++            self.novel_synopsis = "\n\n".join(p for p in paragraphs if p)
++        if not self.novel_synopsis:
++            description = soup.select_one(
++                'meta[property="og:description"], meta[name="description"]'
++            )
++            if description and description.get("content"):
++                self.novel_synopsis = description["content"].strip()
++
++        seen = set()
++        for a in soup.select("a.chapter-group__list-item-link[href]"):
++            url = self.absolute_url(a["href"])
++            if url in seen:
++                continue
++            seen.add(url)
+ 
+-        for a in soup.select(".entry-content ul li span a"):
+             chap_id = len(self.chapters) + 1
+-            vol_id = len(self.chapters) // 100 + 1
++            vol_id = (chap_id - 1) // 100 + 1
+             if len(self.chapters) % 100 == 0:
+                 self.volumes.append(Volume(id=vol_id))
+             self.chapters.append(
+@@ -40,17 +78,31 @@ class DivineDaoLibrary(LegacyCrawler):
+                     id=chap_id,
+                     volume=vol_id,
+                     title=a.text.strip(),
+-                    url=self.absolute_url(a["href"]),
++                    url=url,
+                 )
+             )
+ 
++        logger.info("Novel chapters: %s", len(self.chapters))
++
+     def download_chapter_body(self, chapter):
+         soup = self.get_soup(chapter["url"])
+ 
+-        body = ""
+-        for span in soup.select('article .entry-content > p span[style="font-weight:400"]'):
+-            if not span.text.strip():
+-                continue
+-            body += "<p>" + span.text.strip() + "</p>\n"
++        content = soup.select_one("#chapter-content, article .entry-content")
++        if not content:
++            return ""
++
++        paragraphs = []
++        for p in content.select("p"):
++            text = p.get_text(" ", strip=True).replace("\xa0", " ").strip()
++            if text:
++                paragraphs.append(f"<p>{html_escape.escape(text)}</p>")
++
++        if not paragraphs:
++            text = content.get_text("\n", strip=True)
++            paragraphs = [
++                f"<p>{html_escape.escape(line.strip())}</p>"
++                for line in text.splitlines()
++                if line.strip()
++            ]
+ 
+-        return body
++        return "\n".join(paragraphs)

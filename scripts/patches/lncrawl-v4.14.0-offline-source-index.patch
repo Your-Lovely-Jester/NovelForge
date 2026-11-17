@@ -1,0 +1,33 @@
+diff --git a/lncrawl/context.py b/lncrawl/context.py
+index 207b3d8..ae00a2b 100644
+--- a/lncrawl/context.py
++++ b/lncrawl/context.py
+@@ -1,5 +1,6 @@
+ from functools import cached_property
+ import logging
++import os
+ from pathlib import Path
+ from typing import Optional, Union
+ 
+@@ -234,7 +235,7 @@ class __AppContext__:
+         log_level: Union[int, str, None] = None,
+         config_file: Optional[Path] = None,
+         reset_db_on_failure: bool = False,
+-        sync_remote_index=True,
++        sync_remote_index: Optional[bool] = None,
+     ):
+         if self.__ready:
+             return
+@@ -244,6 +245,12 @@ class __AppContext__:
+         self.db.bootstrap(reset_db_on_failure)
+         self.users.setup_admin()
+         self.secrets.setup_secret()
++        if sync_remote_index is None:
++            # NovelForge pins the crawler version and ships its own source
++            # patches, so the GitHub source index gains nothing. Fetching it
++            # added ~90 s to every crawl and could fail the loader thread
++            # with an Exhausted traceback when GitHub was slow.
++            sync_remote_index = os.environ.get("LNCRAWL_SYNC_REMOTE_INDEX") == "1"
+         self.sources.load(sync_remote_index)
+ 
+ 
