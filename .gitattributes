@@ -12,3 +12,8 @@ node_modules export-ignore
 dist export-ignore
 src-tauri/target export-ignore
 scripts/__pycache__ export-ignore
+
+# Patch context is byte-sensitive: a CRLF patch does not apply to the LF
+# lncrawl checkout. Never let a Windows clone's autocrlf rewrite these.
+*.patch -text
+*.sh text eol=lf

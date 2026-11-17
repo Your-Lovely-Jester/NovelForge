@@ -109,6 +109,10 @@ Both scripts install into user-owned locations and are safe to re-run:
 keep working; Anna's Archive and OceanOfPDF are reported as unavailable until
 Chromium is installed.
 
+The patch files are byte-sensitive. `.gitattributes` marks them `-text` so a
+Windows clone keeps LF; the installers additionally normalise them before
+applying, so an older clone with CRLF patches still works.
+
 `lncrawl` is installed from source at a pinned upstream commit (`59b0382` on
 `dev`, reporting 4.14.0) so NovelForge can apply the source patches in
 `scripts/patches/` (NovelFull AJAX catalogue and metadata selectors, Divine Dao

@@ -238,11 +238,14 @@ if ($wantWebnovel) {
             "-C", $LncrawlDir, "checkout", "-q", "FETCH_HEAD"
         )
     } else {
+        # Without this, a checkout made while autocrlf was true keeps CRLF and
+        # every patch is rejected. Set the config first, then rewrite the tree.
         & git -C $LncrawlDir config core.autocrlf false
         $headResult = Invoke-Probe -FilePath "git" -ArgumentList @(
             "-C", $LncrawlDir, "rev-parse", "HEAD"
         )
         $head = ($headResult.Output -join "").Trim()
+        $target = "HEAD"
         if ($head -ne $LncrawlCommit) {
             $short = $head.Substring(0, [Math]::Min(10, $head.Length))
             Write-Warn "lncrawl checkout is at $short; moving to the pinned commit."
@@ -250,15 +253,15 @@ if ($wantWebnovel) {
                 "-C", $LncrawlDir, "-c", "core.autocrlf=false",
                 "fetch", "--depth", "1", "origin", $LncrawlCommit
             )
-            # The tree only ever holds upstream code plus our patches, which are
-            # re-applied below; discarding local edits is safe and repairs a
-            # checkout made with autocrlf enabled.
-            Invoke-Native -FilePath "git" -Description "git reset lncrawl" -ArgumentList @(
-                "-C", $LncrawlDir, "reset", "-q", "--hard", "FETCH_HEAD"
-            )
-        } else {
-            Write-Host "    Keeping existing checkout at $LncrawlDir" -ForegroundColor DarkGray
+            $target = "FETCH_HEAD"
         }
+        # The tree only ever holds upstream code plus our patches, which are
+        # re-applied below; discarding local edits is safe and also normalises
+        # line endings.
+        Invoke-Native -FilePath "git" -Description "git reset lncrawl" -ArgumentList @(
+            "-C", $LncrawlDir, "reset", "-q", "--hard", $target
+        )
+        Write-Host "    Checkout: $LncrawlDir" -ForegroundColor DarkGray
     }
 
     $lncrawlPython = New-Venv -Venv $LncrawlVenv
@@ -283,11 +286,20 @@ if ($wantWebnovel) {
         "lncrawl-v4.14.0-offline-source-index.patch"
     )
     $patchDir = Join-Path $PSScriptRoot "patches"
+    # A Windows clone with core.autocrlf=true checks these files out with CRLF,
+    # and git then rejects every hunk against the LF lncrawl checkout. Write an
+    # LF copy to a scratch directory and apply that instead.
+    $patchTemp = Join-Path $env:TEMP ("novelforge-patches-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $patchTemp | Out-Null
     foreach ($name in $patchNames) {
-        $patch = Join-Path $patchDir $name
-        if (-not (Test-Path -LiteralPath $patch)) {
-            Fail "Patch not found: $patch"
+        $source = Join-Path $patchDir $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            Fail "Patch not found: $source"
         }
+        $patch = Join-Path $patchTemp $name
+        $text = [System.IO.File]::ReadAllText($source) -replace "`r`n", "`n"
+        [System.IO.File]::WriteAllText($patch, $text)
+
         $reverse = Invoke-Probe -FilePath "git" -ArgumentList @(
             "-C", $LncrawlDir, "apply", "--reverse", "--check", "--quiet", $patch
         )
@@ -307,6 +319,7 @@ if ($wantWebnovel) {
         )
         Write-Host "    Applied: $name" -ForegroundColor DarkGray
     }
+    Remove-Item -LiteralPath $patchTemp -Recurse -Force -ErrorAction SilentlyContinue
 
     $scraperPatch = Join-Path $PSScriptRoot "patch_lncrawl_scraper.py"
     if (-not (Test-Path -LiteralPath $scraperPatch)) {

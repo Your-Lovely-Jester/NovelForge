@@ -51,20 +51,28 @@ fail() { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 [ -d "${CHECKOUT}/.git" ] || fail "Not a lightnovel-crawler checkout: ${CHECKOUT}"
 command -v git >/dev/null 2>&1 || fail "Missing required command: git"
 
-apply_patch() {
-  local file="$1"
-  [ -f "${PATCH_DIR}/${file}" ] || fail "Patch not found: ${PATCH_DIR}/${file}"
+# A Windows clone with core.autocrlf=true checks the patch files out with CRLF,
+# and git then rejects every hunk against the LF checkout. Normalise to LF.
+NORMALISED_DIR="$(mktemp -d)"
+trap 'rm -rf "${NORMALISED_DIR}"' EXIT
 
-  if git -C "${CHECKOUT}" apply --reverse --check "${PATCH_DIR}/${file}" >/dev/null 2>&1; then
+apply_patch() {
+  local file="$1" source patch
+  source="${PATCH_DIR}/${file}"
+  [ -f "${source}" ] || fail "Patch not found: ${source}"
+  patch="${NORMALISED_DIR}/${file}"
+  sed 's/\r$//' "${source}" >"${patch}"
+
+  if git -C "${CHECKOUT}" apply --reverse --check "${patch}" >/dev/null 2>&1; then
     say "Already applied: ${file}"
     return
   fi
 
-  if ! git -C "${CHECKOUT}" apply --check "${PATCH_DIR}/${file}" >/dev/null 2>&1; then
+  if ! git -C "${CHECKOUT}" apply --check "${patch}" >/dev/null 2>&1; then
     fail "Patch does not apply cleanly: ${file} (check the lncrawl version)"
   fi
 
-  git -C "${CHECKOUT}" apply "${PATCH_DIR}/${file}"
+  git -C "${CHECKOUT}" apply "${patch}"
   say "Applied: ${file}"
 }
 
