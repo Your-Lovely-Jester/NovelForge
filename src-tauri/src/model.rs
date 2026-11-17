@@ -711,6 +711,9 @@ pub struct CleanupReport {
 pub struct AppInfo {
     pub name: String,
     pub version: String,
+    /// Short commit the installer was built from; `dev` for local builds.
+    /// Makes a stale installer obvious when diagnosing a Windows install.
+    pub commit: String,
     pub tauri_version: String,
     pub platform: String,
     pub arch: String,

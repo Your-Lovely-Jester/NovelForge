@@ -16,7 +16,7 @@ use crate::process::{self, AppState};
 use crate::resolver;
 use crate::settings::{Settings, now_ms, prepare_download_dir};
 use crate::storage;
-use crate::tools::{ToolsReport, check_tools as inspect_tools};
+use crate::tools::{ToolStatus, ToolsReport, check_tools as inspect_tools};
 use crate::transport::{self, TransportReport};
 use crate::verify;
 use std::collections::BTreeMap;
@@ -24,14 +24,31 @@ use std::path::Path;
 use tauri::{AppHandle, Emitter, State};
 use walkdir::WalkDir;
 
+/// With `settings`, probe the values currently typed in Settings without
+/// writing them to disk. Without it, probe the saved configuration.
 #[tauri::command]
-pub async fn check_tools(state: State<'_, AppState>) -> AppResult<ToolsReport> {
-    let settings = state
-        .settings
-        .read()
-        .map(|guard| guard.clone())
-        .unwrap_or_default();
-    Ok(inspect_tools(&settings).await)
+pub async fn check_tools(
+    state: State<'_, AppState>,
+    settings: Option<Settings>,
+) -> AppResult<ToolsReport> {
+    let effective = match settings {
+        Some(preview) => preview.normalized(),
+        None => state
+            .settings
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default(),
+    };
+    Ok(inspect_tools(&effective).await)
+}
+
+/// Test one tool path immediately, so the Settings fields can answer
+/// "found / not found" before the user saves anything.
+#[tauri::command]
+pub async fn probe_tool(id: String, path: String) -> AppResult<ToolStatus> {
+    crate::tools::probe_tool_path(&id, &path)
+        .await
+        .ok_or_else(|| AppError::msg(format!("Unknown tool id: {id}")))
 }
 
 fn current_settings(state: &State<'_, AppState>) -> Settings {
@@ -731,6 +748,14 @@ pub async fn resume_interrupted(
     Ok(task)
 }
 
+fn build_commit() -> String {
+    option_env!("NOVELFORGE_COMMIT")
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+        .map(|sha| sha.chars().take(7).collect())
+        .unwrap_or_else(|| "dev".to_string())
+}
+
 #[tauri::command]
 pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppResult<AppInfo> {
     let download_dir = state
@@ -742,6 +767,7 @@ pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppResult<App
     Ok(AppInfo {
         name: "NovelForge".to_string(),
         version: app.package_info().version.to_string(),
+        commit: build_commit(),
         tauri_version: tauri::VERSION.to_string(),
         platform: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
@@ -771,6 +797,7 @@ pub async fn get_diagnostics(app: AppHandle, state: State<'_, AppState>) -> AppR
     let mut report = String::new();
     let _ = writeln!(report, "NovelForge diagnostics");
     let _ = writeln!(report, "version: {}", app.package_info().version);
+    let _ = writeln!(report, "commit: {}", build_commit());
     let _ = writeln!(report, "tauri: {}", tauri::VERSION);
     let _ = writeln!(
         report,
@@ -808,6 +835,28 @@ pub async fn get_diagnostics(app: AppHandle, state: State<'_, AppState>) -> AppR
     let _ = writeln!(report, "sourceLimits: {}", settings.source_limits.len());
     let _ = writeln!(report);
     let _ = writeln!(report, "[tools]");
+    let _ = writeln!(
+        report,
+        "binDir: {}",
+        tools
+            .bin_dir
+            .as_deref()
+            .map(redact_home)
+            .unwrap_or_else(|| "unresolved".to_string())
+    );
+    for (label, configured) in [
+        ("lncrawl", settings.lncrawl_path.as_deref()),
+        ("gallery-dl", settings.gallery_dl_path.as_deref()),
+        ("aget", settings.aget_path.as_deref()),
+    ] {
+        let _ = writeln!(
+            report,
+            "configured {label}: {}",
+            configured
+                .map(redact_home)
+                .unwrap_or_else(|| "auto".to_string())
+        );
+    }
     for tool in [&tools.lncrawl, &tools.gallery_dl, &tools.aget] {
         let _ = writeln!(
             report,

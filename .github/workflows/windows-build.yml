@@ -52,6 +52,10 @@ jobs:
       # survives debloated Windows images that disable the Windows Installer
       # service (an MSI would fail there).
       - name: Build NSIS installer
+        env:
+          # Stamped into the binary; About and diagnostics show it, so a stale
+          # installer is identifiable instead of looking like a tool bug.
+          NOVELFORGE_COMMIT: ${{ github.sha }}
         run: npm run tauri build -- --bundles nsis
 
       - name: Checksums

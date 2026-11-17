@@ -42,6 +42,7 @@ export function SettingsPage({ manager }: { manager: DownloadManager }) {
   const [hardcover, setHardcover] = useState<HardcoverStatus | null>(null);
   const [hardcoverToken, setHardcoverToken] = useState("");
   const [hardcoverBusy, setHardcoverBusy] = useState(false);
+  const [checkingTools, setCheckingTools] = useState(false);
 
   useEffect(() => {
     if (manager.settings) setForm(manager.settings);
@@ -148,6 +149,30 @@ export function SettingsPage({ manager }: { manager: DownloadManager }) {
     setSaving(true);
     await manager.saveSettings(form);
     setSaving(false);
+  }
+
+  async function recheckTools() {
+    setCheckingTools(true);
+    // Probe the values currently in the form, not the saved settings, so a
+    // path can be verified before saving. A failure is reported by the hook.
+    const report = await manager.refreshTools(form);
+    setCheckingTools(false);
+    if (!report) return;
+
+    const tools = [report.lncrawl, report.galleryDl, report.aget];
+    const found = tools.filter((tool) => tool.found).length;
+    manager.showNotice(
+      report.allReady ? "success" : "error",
+      report.allReady
+        ? "Toolchain ready"
+        : `Toolchain incomplete — ${found}/3 found`,
+      report.allReady
+        ? "Every engine path resolved and answered a version probe."
+        : `Missing: ${tools
+            .filter((tool) => !tool.found)
+            .map((tool) => tool.label)
+            .join(", ")}. Searched ${report.binDir ?? "the configured paths"}.`,
+    );
   }
 
   return (
@@ -550,37 +575,57 @@ export function SettingsPage({ manager }: { manager: DownloadManager }) {
             />
             <button
               type="button"
-              onClick={() => void manager.refreshTools()}
+              onClick={() => void recheckTools()}
+              disabled={checkingTools}
               className="btn-secondary h-7 shrink-0 px-2.5"
             >
-              <RefreshCw className="h-3 w-3" strokeWidth={1.8} />
+              <RefreshCw
+                className={cn("h-3 w-3", checkingTools && "animate-spin")}
+                strokeWidth={1.8}
+              />
               Re-check
             </button>
           </div>
 
           <div className="mt-3 space-y-3">
             <ToolPathField
+              id="lncrawl"
               label="lncrawl binary"
               placeholder="~/.local/bin/lncrawl"
               value={form.lncrawlPath}
               tool={toolMap.get("lncrawl")}
+              onTest={manager.testToolPath}
               onChange={(value) => update("lncrawlPath", value)}
             />
             <ToolPathField
+              id="gallery_dl"
               label="gallery-dl binary"
               placeholder="~/.local/bin/gallery-dl"
               value={form.galleryDlPath}
               tool={toolMap.get("gallery_dl")}
+              onTest={manager.testToolPath}
               onChange={(value) => update("galleryDlPath", value)}
             />
             <ToolPathField
+              id="aget"
               label="aget wrapper"
               placeholder="~/.local/bin/aget"
               value={form.agetPath}
               tool={toolMap.get("aget")}
+              onTest={manager.testToolPath}
               onChange={(value) => update("agetPath", value)}
             />
           </div>
+
+          {manager.tools?.binDir && (
+            <p className="mt-2 break-all text-[10.5px] leading-relaxed text-parchment-700">
+              Auto-discovery checks PATH, then{" "}
+              <span className="font-mono text-parchment-500">
+                {manager.tools.binDir}
+              </span>
+              .
+            </p>
+          )}
 
           <div className="mt-auto flex items-start gap-2.5 border border-parchment-100/8 bg-black/20 px-3 py-2.5 pt-2.5">
             <Settings2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-parchment-600" strokeWidth={1.8} />
@@ -697,18 +742,34 @@ function QuotaField({
 }
 
 function ToolPathField({
+  id,
   label,
   placeholder,
   value,
   tool,
+  onTest,
   onChange,
 }: {
+  id: string;
   label: string;
   placeholder: string;
   value: string | null;
   tool: ToolStatus | undefined;
+  onTest: (id: string, path: string) => Promise<ToolStatus | null>;
   onChange: (value: string | null) => void;
 }) {
+  const [testing, setTesting] = useState(false);
+
+  async function test() {
+    setTesting(true);
+    await onTest(id, value ?? "");
+    setTesting(false);
+  }
+
+  const message = tool?.found
+    ? tool?.version ?? tool?.path ?? "Executable found"
+    : tool?.detail ?? "No executable file at this path";
+
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -725,15 +786,41 @@ function ToolPathField({
           {tool?.found ? "detected" : "not found"}
         </span>
       </div>
-      <input
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value.trim() || null)}
-        placeholder={placeholder}
-        spellCheck={false}
-        className="field h-9 w-full px-3 font-mono text-[12.5px] text-parchment-200 outline-none"
-      />
-      <div className="mt-1 truncate text-[10.5px] text-parchment-700" title={tool?.path ?? undefined}>
-        {tool?.version ?? tool?.detail ?? "No version reported"}
+      <div className="flex items-center gap-1.5">
+        <input
+          value={value ?? ""}
+          onChange={(event) =>
+            // Do not trim while typing: `C:\Program Files\…` needs its space.
+            onChange(event.target.value === "" ? null : event.target.value)
+          }
+          onBlur={(event) => onChange(event.target.value.trim() || null)}
+          placeholder={placeholder}
+          spellCheck={false}
+          className="field h-9 min-w-0 flex-1 px-3 font-mono text-[12.5px] text-parchment-200 outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => void test()}
+          disabled={testing}
+          title="Test this path now"
+          className="btn-secondary h-9 shrink-0 gap-1 px-2.5"
+        >
+          {testing ? (
+            <RefreshCw className="h-3 w-3 animate-spin" strokeWidth={2} />
+          ) : (
+            <Check className="h-3 w-3" strokeWidth={2.2} />
+          )}
+          Check
+        </button>
+      </div>
+      <div
+        className={cn(
+          "mt-1 truncate text-[10.5px]",
+          tool?.found ? "text-parchment-700" : "text-vermilion-300/80",
+        )}
+        title={tool?.path ?? undefined}
+      >
+        {message}
       </div>
     </div>
   );

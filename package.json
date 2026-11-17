@@ -1,7 +1,7 @@
 {
   "name": "novelforge",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private download studio for webnovels, manga and e-books",
   "type": "module",
   "scripts": {

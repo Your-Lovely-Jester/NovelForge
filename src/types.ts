@@ -263,6 +263,7 @@ export interface ToolsReport {
   aget: ToolStatus;
   allReady: boolean;
   checkedAt: number;
+  binDir: string | null;
 }
 
 interface SourceLimit {
@@ -477,6 +478,7 @@ export interface LibraryResponse {
 export interface AppInfo {
   name: string;
   version: string;
+  commit: string;
   tauriVersion: string;
   platform: string;
   arch: string;

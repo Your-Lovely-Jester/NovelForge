@@ -25,6 +25,9 @@ pub struct ToolsReport {
     pub aget: ToolStatus,
     pub all_ready: bool,
     pub checked_at: u64,
+    /// Directory scanned for installer shims. Surfaced in the UI and the
+    /// diagnostics report so "not found" always says where the app looked.
+    pub bin_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +78,7 @@ fn resolve_lncrawl(settings: &Settings) -> Option<ResolvedTool> {
                 "~/.local/bin/lncrawl",
                 "/usr/local/bin/lncrawl",
                 "/usr/bin/lncrawl",
+                "~/.local/share/novelforge/tools/lncrawl-venv/bin/lncrawl",
             ])
         })
         .or_else(|| installed_bin("lncrawl"))?;
@@ -173,7 +177,19 @@ fn find_binary(candidates: &[&str]) -> Option<PathBuf> {
 /// installer writes to `~/.local/bin`, which `find_binary` already reaches via
 /// PATH; looking here as well is a harmless fallback.
 fn installed_bin(name: &str) -> Option<PathBuf> {
-    installed_bin_in(&dirs::data_local_dir()?.join("novelforge"), name)
+    installed_bin_in(&tool_root()?, name)
+}
+
+/// `%LOCALAPPDATA%\novelforge` on Windows, `~/.local/share/novelforge` on
+/// Linux. Both installers write their launchers below it.
+fn tool_root() -> Option<PathBuf> {
+    Some(dirs::data_local_dir()?.join("novelforge"))
+}
+
+/// The `bin` directory the installers populate. Exposed so Settings and the
+/// diagnostics report can name the exact folder that was searched.
+pub fn tool_bin_dir() -> Option<PathBuf> {
+    Some(tool_root()?.join("bin"))
 }
 
 /// Resolve `name` inside an installer bin directory. Split from
@@ -216,6 +232,22 @@ pub async fn check_tools(settings: &Settings) -> ToolsReport {
         aget,
         all_ready,
         checked_at: crate::settings::now_ms(),
+        bin_dir: tool_bin_dir().map(|path| path.to_string_lossy().to_string()),
+    }
+}
+
+/// A configured path that no longer exists is the most common reason a tool
+/// "disappears" after it was found once. Report it explicitly instead of
+/// leaving the row at a silent "not found".
+fn configured_path_problem(path: Option<&str>, label: &str) -> Option<String> {
+    path.filter(|path| !Path::new(path).is_file())
+        .map(|path| format!("Configured {label} path is not a file: {path}"))
+}
+
+fn join_detail(base: String, problem: Option<String>) -> String {
+    match problem {
+        Some(problem) => format!("{base} · {problem}"),
+        None => base,
     }
 }
 
@@ -234,7 +266,7 @@ async fn probe_lncrawl(settings: &Settings) -> ToolStatus {
             .as_ref()
             .map(|tool| tool.program.to_string_lossy().to_string()),
         version,
-        detail: None,
+        detail: configured_path_problem(settings.lncrawl_path.as_deref(), "lncrawl"),
         hint: install_hint("webnovel"),
     }
 }
@@ -252,7 +284,10 @@ async fn probe_gallery_dl(settings: &Settings) -> ToolStatus {
         found: resolved.is_some(),
         path: resolved.as_ref().map(|tool| tool.display.clone()),
         version,
-        detail: Some("387 sites · 26 manga extractors · CBZ / ZIP".to_string()),
+        detail: Some(join_detail(
+            "387 sites · 26 manga extractors · CBZ / ZIP".to_string(),
+            configured_path_problem(settings.gallery_dl_path.as_deref(), "gallery-dl"),
+        )),
         hint: install_hint("manga"),
     }
 }
@@ -272,14 +307,82 @@ async fn probe_aget(settings: &Settings) -> ToolStatus {
         found: resolved.is_some(),
         path: resolved.as_ref().map(|tool| tool.display.clone()),
         version,
-        detail: Some(if chromium {
-            "Playwright Chromium ready".to_string()
-        } else {
-            "Chromium missing — Anna's Archive/Ocean will be skipped; LibGen and WeLib still work"
-                .to_string()
-        }),
+        detail: Some(join_detail(
+            if chromium {
+                "Playwright Chromium ready".to_string()
+            } else {
+                "Chromium missing — Anna's Archive/Ocean will be skipped; LibGen and WeLib still work"
+                    .to_string()
+            },
+            configured_path_problem(settings.aget_path.as_deref(), "aget"),
+        )),
         hint: install_hint("books"),
     }
+}
+
+pub fn engine_for_tool_id(id: &str) -> Option<Engine> {
+    match id {
+        "lncrawl" => Some(Engine::Webnovel),
+        "gallery_dl" => Some(Engine::Manga),
+        "aget" => Some(Engine::Books),
+        _ => None,
+    }
+}
+
+fn component_for_engine(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Webnovel => "webnovel",
+        Engine::Manga => "manga",
+        Engine::Books => "books",
+    }
+}
+
+/// Probe one user-entered path without saving settings. The Settings page uses
+/// this for its per-field "Check" button so typing a path has an immediate,
+/// visible result instead of waiting for a full save + re-check.
+pub async fn probe_tool_path(id: &str, path: &str) -> Option<ToolStatus> {
+    let engine = engine_for_tool_id(id)?;
+    let expanded = expand_tilde(path.trim());
+    let trimmed = expanded.as_str();
+    let missing = if trimmed.is_empty() || !Path::new(trimmed).is_file() {
+        Some(if trimmed.is_empty() {
+            "No path entered".to_string()
+        } else {
+            format!("No executable file at {trimmed}")
+        })
+    } else {
+        None
+    };
+
+    if let Some(detail) = missing {
+        return Some(ToolStatus {
+            id: id.to_string(),
+            label: match engine {
+                Engine::Webnovel => "Lightnovel Crawler",
+                Engine::Manga => "gallery-dl",
+                Engine::Books => "Book sources (aget)",
+            }
+            .to_string(),
+            found: false,
+            path: None,
+            version: None,
+            detail: Some(detail),
+            hint: install_hint(component_for_engine(engine)),
+        });
+    }
+
+    let mut settings = Settings::default();
+    match engine {
+        Engine::Webnovel => settings.lncrawl_path = Some(trimmed.to_string()),
+        Engine::Manga => settings.gallery_dl_path = Some(trimmed.to_string()),
+        Engine::Books => settings.aget_path = Some(trimmed.to_string()),
+    }
+
+    Some(match engine {
+        Engine::Webnovel => probe_lncrawl(&settings).await,
+        Engine::Manga => probe_gallery_dl(&settings).await,
+        Engine::Books => probe_aget(&settings).await,
+    })
 }
 
 fn install_hint(component: &str) -> String {
@@ -296,7 +399,11 @@ fn install_hint(component: &str) -> String {
 async fn probe(program: &Path, prefix: &[String], args: &[&str]) -> Option<String> {
     let mut command = Command::new(program);
     command.args(prefix).args(args).kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+    // A cold `lncrawl version` imports the whole crawler package. On Windows
+    // with a mechanical disk that can take well over five seconds; timing out
+    // is not fatal (the binary is still reported as found) but it hides the
+    // version line, so allow a realistic cold start.
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
         .await
         .ok()?
         .ok()?;
@@ -396,6 +503,32 @@ mod tests {
         assert_eq!(installed_bin_in(&root, "gallery-dl"), None);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn configured_path_problem_names_missing_files() {
+        let root = scratch("configured-path");
+        let present = root.join("bin").join("lncrawl.cmd");
+        std::fs::write(&present, "").unwrap();
+        assert_eq!(
+            configured_path_problem(Some(&present.to_string_lossy()), "lncrawl"),
+            None
+        );
+
+        let missing = root.join("bin").join("gone.cmd");
+        let detail = configured_path_problem(Some(&missing.to_string_lossy()), "lncrawl")
+            .expect("missing path should be reported");
+        assert!(detail.contains("not a file"), "{detail}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_ids_map_to_engines() {
+        assert_eq!(engine_for_tool_id("lncrawl"), Some(Engine::Webnovel));
+        assert_eq!(engine_for_tool_id("gallery_dl"), Some(Engine::Manga));
+        assert_eq!(engine_for_tool_id("aget"), Some(Engine::Books));
+        assert_eq!(engine_for_tool_id("unknown"), None);
     }
 
     #[test]

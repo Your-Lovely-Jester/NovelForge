@@ -65,16 +65,69 @@ export function useDownloadManager() {
     }
   }, []);
 
-  const refreshTools = useCallback(async () => {
-    try {
-      const report = await api.checkTools();
-      setTools(report);
-      return report;
-    } catch {
-      setTools(null);
-      return null;
-    }
-  }, []);
+  const refreshTools = useCallback(
+    async (settingsOverride?: Settings) => {
+      try {
+        const report = await api.checkTools(settingsOverride);
+        setTools(report);
+        return report;
+      } catch (error) {
+        // Keep the last known report on screen; a failed probe must never look
+        // like "everything disappeared" without an explanation.
+        showNotice("error", "Tool check failed", errorMessage(error));
+        return null;
+      }
+    },
+    [showNotice],
+  );
+
+  const testToolPath = useCallback(
+    async (id: string, path: string): Promise<ToolStatus | null> => {
+      const trimmed = path.trim();
+      if (!trimmed) {
+        showNotice(
+          "error",
+          "Path is empty",
+          "Enter the full path to the executable, then test again.",
+        );
+        return null;
+      }
+      try {
+        const status = await api.probeToolPath(id, trimmed);
+        setTools((current) => {
+          if (!current) return current;
+          const next: ToolsReport = {
+            ...current,
+            lncrawl: id === "lncrawl" ? status : current.lncrawl,
+            galleryDl: id === "gallery_dl" ? status : current.galleryDl,
+            aget: id === "aget" ? status : current.aget,
+            checkedAt: Date.now(),
+          };
+          next.allReady =
+            next.lncrawl.found && next.galleryDl.found && next.aget.found;
+          return next;
+        });
+        if (status.found) {
+          showNotice(
+            "success",
+            `${status.label} found`,
+            status.version ?? status.path ?? trimmed,
+          );
+        } else {
+          showNotice(
+            "error",
+            `${status.label} not found`,
+            status.detail ?? `No executable file at ${trimmed}`,
+          );
+        }
+        return status;
+      } catch (error) {
+        showNotice("error", "Could not test path", errorMessage(error));
+        return null;
+      }
+    },
+    [showNotice],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -688,6 +741,7 @@ export function useDownloadManager() {
     clearLogs,
     refreshLibrary,
     refreshTools,
+    testToolPath,
     saveSettings,
     verify,
     reveal,

@@ -101,9 +101,10 @@ error instead of pretending. See §4.
 millisecond precision, rotate at 5 MiB to `.log.1`, and include job id and
 stream. About → **Copy diagnostics** returns a plain-text report containing:
 
-- version, Tauri version, OS, architecture;
+- version, build commit, Tauri version, OS, architecture;
 - download root, config file, log path;
 - a redacted settings summary (never the Hardcover token);
+- the installer `bin` directory that was searched, plus each configured path;
 - each tool's found/version/path/detail;
 - active jobs with status and progress;
 - total and interrupted task counts;
@@ -132,6 +133,16 @@ with the message, a Reload button and Copy error, instead of a white window.
 - `install-tools.ps1` is the native Windows counterpart (no WSL, no admin):
   same pins, same patch order, `%LOCALAPPDATA%\novelforge\bin` shims. The bash
   installer refuses MSYS/Cygwin and points at it.
+- Tool discovery reports the directory it searched (`binDir`) in Settings,
+  Guardrails and diagnostics. A "not found" row now names a configured path
+  that does not exist instead of failing silently.
+- Settings → **Check** probes the typed path immediately, without saving.
+  **Re-check** probes the current form values (unsaved edits included) and
+  shows a success/failure notice with the missing engines and the searched
+  directory. Both paths previously produced no feedback when the path was
+  unsaved.
+- The version probe allows 15 seconds: a cold `lncrawl version` imports the
+  whole package and can exceed five seconds on Windows with a mechanical disk.
 
 ---
 
@@ -156,6 +167,10 @@ Wine run as Windows validation.
      aget and Playwright Chromium under `%LOCALAPPDATA%\novelforge`, writes
      `.cmd` shims into `%LOCALAPPDATA%\novelforge\bin`, and needs no
      administrator rights, no WSL, no `PATH` edit and no reboot.
+   - Install the **newest** `novelforge-windows-nsis` artifact. Builds after
+     `c02e8c5` scan `%LOCALAPPDATA%\novelforge\bin`; an older installer only
+     searches `PATH` and reports every tool as missing even after a successful
+     bootstrap. About shows the build commit, so a stale install is visible.
    - Run the acceptance list below.
 2. **GitHub Actions `windows-latest`** for build, compile checks and packaging.
    `.github/workflows/windows-build.yml` runs `cargo fmt --check`,
@@ -174,7 +189,12 @@ Wine run as Windows validation.
 - [ ] First launch opens, no blank WebView2 window.
 - [ ] Settings path is under `%APPDATA%\com.novelforge.app` (or Tauri's
       resolved config dir), not a Linux path.
+- [ ] About shows a `build <7-char sha>` matching the Actions run that produced
+      the installer (not `dev`, not an older commit).
 - [ ] Tool discovery finds native `lncrawl.cmd` / `gallery-dl.exe` / `aget`.
+- [ ] Each Settings path field's **Check** answers found/not found immediately;
+      **Re-check** reports the searched `%LOCALAPPDATA%\novelforge\bin` when a
+      tool is missing.
 - [ ] A short webnovel download (2 chapters) produces cover, `metadata.json`,
       `chapters/`, `index.json`, `chapters.html` and one verified EPUB.
 - [ ] Cancel kills the Python grandchild (`tasklist` shows no orphan).
@@ -210,6 +230,10 @@ the Windows Installer service or Windows Update.
   first launch, Settings paths, About diagnostics, single instance, quit modal,
   library UI, theme/DPI. Run `scripts\install-tools.ps1` before the crawl items;
   a missing engine is now a toolchain problem, not an image problem.
+- Confirm the **About build sha** first. The first native Windows run installed
+  the toolchain correctly but the app reported every tool missing because the
+  installed build predated shim discovery (`c02e8c5`); the tools were never at
+  fault. A stale installer looks exactly like a broken tool check.
 
 Record the result as "smoke test on a modified Windows 10 image"; only a stock
 Windows 10/11 VM or physical machine closes NF-057.

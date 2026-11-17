@@ -91,7 +91,7 @@ const ENGINEERING = [
   "Declarative source registry with verified adapters and parsers",
   "TTL caches for search, author pages, summaries and indexes",
   "Fail-closed index and container verification before import",
-  "Tauri shell: Linux verified first; Windows and macOS await runtime validation",
+  "Tauri shell: Linux and Windows installed and launched; macOS awaits runtime validation",
 ] as const;
 
 export function AboutPage({ manager }: { manager: DownloadManager }) {
@@ -142,6 +142,7 @@ export function AboutPage({ manager }: { manager: DownloadManager }) {
                 NovelForge
               </h2>
               <span className="chip chip-vermilion">v{info?.version ?? "0.1.0"}</span>
+              <span className="chip">build {info?.commit ?? "dev"}</span>
               <span className="chip">Local-first</span>
             </div>
             <p className="mt-2 max-w-[620px] text-[13px] leading-relaxed text-parchment-400">

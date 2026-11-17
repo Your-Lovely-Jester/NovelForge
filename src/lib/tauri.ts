@@ -23,6 +23,7 @@ import type {
   SourceProfileSummary,
   StatusEvent,
   ToolsReport,
+  ToolStatus,
   TransportReport,
   VerificationReport,
   NovelChapterIndex,
@@ -56,7 +57,13 @@ function subscribe<T>(
 }
 
 export const api = {
-  checkTools: () => invokeCommand<ToolsReport>("check_tools"),
+  checkTools: (settings?: Settings) =>
+    invokeCommand<ToolsReport>(
+      "check_tools",
+      settings ? { settings } : undefined,
+    ),
+  probeToolPath: (id: string, path: string) =>
+    invokeCommand<ToolStatus>("probe_tool", { id, path }),
   resolveTitle: (
     engine: Engine,
     query: string,

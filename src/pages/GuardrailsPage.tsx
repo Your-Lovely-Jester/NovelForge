@@ -101,8 +101,11 @@ export function GuardrailsPage({ manager }: { manager: DownloadManager }) {
         report.allReady ? "success" : "error",
         report.allReady ? "Toolchain ready" : "Toolchain incomplete",
         report.allReady
-          ? "All four binaries responded to a version probe."
-          : "One or more engines are missing. Review the hints below.",
+          ? "lncrawl, gallery-dl and aget all resolved."
+          : `Missing: ${[report.lncrawl, report.galleryDl, report.aget]
+              .filter((tool) => !tool.found)
+              .map((tool) => tool.label)
+              .join(", ")}. Searched ${report.binDir ?? "the configured paths"}.`,
       );
     }
   }
@@ -212,6 +215,11 @@ export function GuardrailsPage({ manager }: { manager: DownloadManager }) {
                           {tool.version}
                         </div>
                       )}
+                      {!tool.found && tool.detail && (
+                        <div className="mt-1 text-[11px] leading-relaxed text-vermilion-200/80">
+                          {tool.detail}
+                        </div>
+                      )}
                       {!tool.found && tool.hint && (
                         <div className="mt-1.5 flex items-start gap-1.5">
                           <code className="min-w-0 flex-1 select-all break-all border border-parchment-100/8 bg-black/30 px-1.5 py-1 font-mono text-[10.5px] leading-relaxed text-gold-300/80">
@@ -253,6 +261,16 @@ export function GuardrailsPage({ manager }: { manager: DownloadManager }) {
               </div>
             ))}
           </div>
+
+          {manager.tools?.binDir && (
+            <p className="mt-3 break-all border-t border-parchment-100/8 pt-2.5 text-[10.5px] leading-relaxed text-parchment-700">
+              Installer shims are searched in{" "}
+              <span className="font-mono text-parchment-500">
+                {manager.tools.binDir}
+              </span>{" "}
+              after PATH.
+            </p>
+          )}
         </section>
 
         <section className="panel p-4 xl:col-span-5">
