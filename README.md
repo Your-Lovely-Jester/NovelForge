@@ -109,11 +109,13 @@ Both scripts install into user-owned locations and are safe to re-run:
 keep working; Anna's Archive and OceanOfPDF are reported as unavailable until
 Chromium is installed.
 
-`lncrawl` is installed from source at the pinned release so NovelForge can
-apply the source patches in `scripts/patches/` (NovelFull AJAX catalogue and
-metadata selectors, Divine Dao Library's redesigned theme, and the NovelPing
-adapter). Re-running `scripts/apply-lncrawl-patches.sh` is safe and only applies
-missing patches.
+`lncrawl` is installed from source at a pinned upstream commit (`59b0382` on
+`dev`, reporting 4.14.0) so NovelForge can apply the source patches in
+`scripts/patches/` (NovelFull AJAX catalogue and metadata selectors, Divine Dao
+Library's redesigned theme, and the NovelPing adapter). The `v4.14.0` tag is
+older than that commit and the last three patches do not apply to it.
+Re-running `scripts/apply-lncrawl-patches.sh` is safe and only applies missing
+patches.
 
 Make sure `~/.local/bin` is on `PATH` on Linux/macOS. NovelForge also accepts
 explicit paths in **Settings → Toolchain paths** if auto-discovery fails. On

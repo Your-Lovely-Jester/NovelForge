@@ -125,8 +125,10 @@ with the message, a Reload button and Copy error, instead of a white window.
   venv launcher owns the Python grandchild.
 - Pause/resume are Unix-only and now fail closed elsewhere.
 - `install-tools.sh` pins `gallery-dl 1.32.20`, `click 8.5.1`,
-  `nodriver 0.50.99`, `playwright 1.65.0`, `rich 15.0.0`, and already pinned
-  lncrawl `v4.14.0`. Components can be installed separately.
+  `nodriver 0.50.99`, `playwright 1.65.0`, `rich 15.0.0`, and lncrawl at commit
+  `59b0382` on `dev` (reports 4.14.0). The tag `v4.14.0` is older and the last
+  three source patches do not apply to it. Components can be installed
+  separately.
 - `install-tools.ps1` is the native Windows counterpart (no WSL, no admin):
   same pins, same patch order, `%LOCALAPPDATA%\novelforge\bin` shims. The bash
   installer refuses MSYS/Cygwin and points at it.

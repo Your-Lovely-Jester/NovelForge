@@ -44,7 +44,11 @@ $ErrorActionPreference = "Stop"
 # Pinned versions: an upstream release must not silently change crawl output.
 # Bump these together with a live smoke run (see docs/QA_MATRIX.md).
 $LncrawlRepo = "https://github.com/lncrawl/lightnovel-crawler.git"
-$LncrawlTag = "v4.14.0"
+# The eight patches in scripts/patches/ were generated against this commit on
+# `dev`. It still reports 4.14.0 but already contains the
+# `create_crawler_info` refactor the source-capabilities patch depends on; tag
+# `v4.14.0` is older and the last three patches do not apply to it.
+$LncrawlCommit = "59b0382d51927953aa8120c5de62dab23ce3f731"
 $GalleryDlVersion = "1.32.20"
 $AgetRepo = "https://github.com/ALBEDO-TABAI/annas-archive-downloader.git"
 $AgetClick = "8.5.1"
@@ -92,6 +96,28 @@ function Invoke-Native {
     }
 }
 
+# Windows PowerShell 5.1 converts a native command's stderr into an ErrorRecord
+# as soon as the stream is redirected, and $ErrorActionPreference = "Stop" then
+# aborts the script. Probes intentionally produce stderr and non-zero exits
+# ("patch does not apply", "no suitable Python runtime"), so they run under
+# Continue and keep both streams to themselves.
+function Invoke-Probe {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $FilePath @ArgumentList 2>&1
+        $code = $LASTEXITCODE
+        if ($null -eq $code) { $code = 0 }
+        return [pscustomobject]@{ ExitCode = $code; Output = @($output) }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Write-CmdShim {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -123,12 +149,12 @@ function Resolve-Python {
             continue
         }
         $checkArgs = $candidate.Prefix + @("-c", $probe)
-        & $candidate.Exe @checkArgs 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        $check = Invoke-Probe -FilePath $candidate.Exe -ArgumentList $checkArgs
+        if ($check.ExitCode -ne 0) {
             continue
         }
         $versionArgs = $candidate.Prefix + @("-c", "import sys; print(sys.version.split()[0])")
-        $version = (& $candidate.Exe @versionArgs 2>$null) -join ""
+        $version = ((Invoke-Probe -FilePath $candidate.Exe -ArgumentList $versionArgs).Output -join "").Trim()
         Write-Host "    Python $version via $($candidate.Exe) $($candidate.Prefix -join ' ')" -ForegroundColor DarkGray
         return $candidate
     }
@@ -193,19 +219,46 @@ function New-Venv {
 # lncrawl
 # ---------------------------------------------------------------------------
 if ($wantWebnovel) {
-    Write-Step "Installing lncrawl $LncrawlTag"
+    Write-Step "Installing lncrawl $($LncrawlCommit.Substring(0, 10))"
     if (-not (Test-Path -LiteralPath (Join-Path $LncrawlDir ".git"))) {
         if (Test-Path -LiteralPath $LncrawlDir) {
             Fail "$LncrawlDir exists but is not a git checkout. Remove it and rerun."
         }
-        Invoke-Native -FilePath "git" -Description "git clone lncrawl" -ArgumentList @(
-            "-c", "core.autocrlf=false",
-            "clone", "--depth", "1", "--branch", $LncrawlTag,
-            $LncrawlRepo, $LncrawlDir
+        Invoke-Native -FilePath "git" -Description "git init lncrawl" -ArgumentList @(
+            "init", "-q", $LncrawlDir
+        )
+        Invoke-Native -FilePath "git" -Description "git remote lncrawl" -ArgumentList @(
+            "-C", $LncrawlDir, "remote", "add", "origin", $LncrawlRepo
+        )
+        Invoke-Native -FilePath "git" -Description "git fetch lncrawl" -ArgumentList @(
+            "-C", $LncrawlDir, "-c", "core.autocrlf=false",
+            "fetch", "--depth", "1", "origin", $LncrawlCommit
+        )
+        Invoke-Native -FilePath "git" -Description "git checkout lncrawl" -ArgumentList @(
+            "-C", $LncrawlDir, "checkout", "-q", "FETCH_HEAD"
         )
     } else {
-        Write-Host "    Keeping existing checkout at $LncrawlDir" -ForegroundColor DarkGray
         & git -C $LncrawlDir config core.autocrlf false
+        $headResult = Invoke-Probe -FilePath "git" -ArgumentList @(
+            "-C", $LncrawlDir, "rev-parse", "HEAD"
+        )
+        $head = ($headResult.Output -join "").Trim()
+        if ($head -ne $LncrawlCommit) {
+            $short = $head.Substring(0, [Math]::Min(10, $head.Length))
+            Write-Warn "lncrawl checkout is at $short; moving to the pinned commit."
+            Invoke-Native -FilePath "git" -Description "git fetch lncrawl" -ArgumentList @(
+                "-C", $LncrawlDir, "-c", "core.autocrlf=false",
+                "fetch", "--depth", "1", "origin", $LncrawlCommit
+            )
+            # The tree only ever holds upstream code plus our patches, which are
+            # re-applied below; discarding local edits is safe and repairs a
+            # checkout made with autocrlf enabled.
+            Invoke-Native -FilePath "git" -Description "git reset lncrawl" -ArgumentList @(
+                "-C", $LncrawlDir, "reset", "-q", "--hard", "FETCH_HEAD"
+            )
+        } else {
+            Write-Host "    Keeping existing checkout at $LncrawlDir" -ForegroundColor DarkGray
+        }
     }
 
     $lncrawlPython = New-Venv -Venv $LncrawlVenv
@@ -235,14 +288,19 @@ if ($wantWebnovel) {
         if (-not (Test-Path -LiteralPath $patch)) {
             Fail "Patch not found: $patch"
         }
-        & git -C $LncrawlDir apply --reverse --check $patch 2>$null
-        if ($LASTEXITCODE -eq 0) {
+        $reverse = Invoke-Probe -FilePath "git" -ArgumentList @(
+            "-C", $LncrawlDir, "apply", "--reverse", "--check", "--quiet", $patch
+        )
+        if ($reverse.ExitCode -eq 0) {
             Write-Host "    Already applied: $name" -ForegroundColor DarkGray
             continue
         }
-        & git -C $LncrawlDir apply --check $patch 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            Fail "Patch does not apply cleanly: $name (lncrawl version mismatch?)"
+        $forward = Invoke-Probe -FilePath "git" -ArgumentList @(
+            "-C", $LncrawlDir, "apply", "--check", "--quiet", $patch
+        )
+        if ($forward.ExitCode -ne 0) {
+            $detail = ($forward.Output | Select-Object -Last 3) -join " "
+            Fail "Patch does not apply cleanly: $name (lncrawl version mismatch?) $detail"
         }
         Invoke-Native -FilePath "git" -Description "apply $name" -ArgumentList @(
             "-C", $LncrawlDir, "apply", $patch
@@ -304,9 +362,10 @@ if ($wantBooks) {
     } else {
         Write-Host "    Keeping existing checkout at $AgetDir" -ForegroundColor DarkGray
         & git -C $AgetDir config core.autocrlf false
-        & git -C $AgetDir pull --ff-only
-        if ($LASTEXITCODE -ne 0) {
+        $pull = Invoke-Probe -FilePath "git" -ArgumentList @("-C", $AgetDir, "pull", "--ff-only")
+        if ($pull.ExitCode -ne 0) {
             Write-Warn "Could not refresh aget; continuing with the existing checkout."
+            Write-Host ("    " + (($pull.Output | Select-Object -Last 3) -join " ")) -ForegroundColor DarkGray
         }
     }
 
@@ -347,17 +406,19 @@ if ($wantBooks) {
 # ---------------------------------------------------------------------------
 Write-Step "Verifying"
 if ($wantWebnovel) {
-    $version = (& (Join-Path $BinDir "lncrawl.cmd") version 2>&1 | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0) {
-        Fail "lncrawl.cmd did not run. Check the output above."
+    $lncrawl = Invoke-Probe -FilePath (Join-Path $BinDir "lncrawl.cmd") -ArgumentList @("version")
+    if ($lncrawl.ExitCode -ne 0) {
+        Fail "lncrawl.cmd did not run (exit $($lncrawl.ExitCode)). Check the output above."
     }
+    $version = ($lncrawl.Output | Select-Object -First 1)
     Write-Host "    lncrawl    $version" -ForegroundColor DarkGray
 }
 if ($wantManga) {
-    $version = (& (Join-Path $BinDir "gallery-dl.cmd") --version 2>&1 | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0) {
-        Fail "gallery-dl.cmd did not run. Check the output above."
+    $gallery = Invoke-Probe -FilePath (Join-Path $BinDir "gallery-dl.cmd") -ArgumentList @("--version")
+    if ($gallery.ExitCode -ne 0) {
+        Fail "gallery-dl.cmd did not run (exit $($gallery.ExitCode)). Check the output above."
     }
+    $version = ($gallery.Output | Select-Object -First 1)
     Write-Host "    gallery-dl $version" -ForegroundColor DarkGray
 }
 if ($wantBooks) {

@@ -190,7 +190,12 @@ def _patch_source(path: Path, applier, label: str, verify_patched) -> bool:
 
 
 def _origin(module: str) -> Path | None:
-    spec = importlib.util.find_spec(module)
+    # find_spec raises instead of returning None when the parent package is
+    # absent, which turns "lncrawl is not installed" into a traceback.
+    try:
+        spec = importlib.util.find_spec(module)
+    except ModuleNotFoundError:
+        return None
     if spec is None or spec.origin is None:
         return None
     return Path(spec.origin)

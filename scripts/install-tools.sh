@@ -62,7 +62,11 @@ AGET_DIR="${TOOLS_DIR}/annas-archive-downloader"
 AGET_VENV="${TOOLS_DIR}/aget-venv"
 
 LNCRAWL_REPO="https://github.com/lncrawl/lightnovel-crawler.git"
-LNCRAWL_TAG="v4.14.0"
+# The eight patches in scripts/patches/ were generated against this commit on
+# `dev`, which still reports 4.14.0 but already contains the
+# `create_crawler_info` refactor that the source-capabilities patch depends on.
+# Tag `v4.14.0` is older and the last three patches do not apply to it.
+LNCRAWL_COMMIT="59b0382d51927953aa8120c5de62dab23ce3f731"
 LNCRAWL_DIR="${TOOLS_DIR}/lightnovel-crawler"
 LNCRAWL_VENV="${TOOLS_DIR}/lncrawl-venv"
 AGET_REPO="https://github.com/ALBEDO-TABAI/annas-archive-downloader.git"
@@ -92,14 +96,28 @@ mkdir -p "${BIN_DIR}" "${DATA_DIR}/bin" "${TOOLS_DIR}"
 
 if [ "${WANT_WEBNOVEL}" -eq 1 ]; then
 # --- lncrawl ---------------------------------------------------------------
-# Source install, because the release binary cannot be patched and lncrawl
-# v4.14.0's NovelFull adapter is stale (NF-019). The patch is applied below.
-say "Fetching lncrawl ${LNCRAWL_TAG}"
+# Source install, because the release binary cannot be patched and lncrawl's
+# NovelFull adapter is stale (NF-019). The patch is applied below.
+say "Fetching lncrawl ${LNCRAWL_COMMIT:0:10}"
 need git
 if [ ! -d "${LNCRAWL_DIR}/.git" ]; then
-  git clone --depth 1 --branch "${LNCRAWL_TAG}" "${LNCRAWL_REPO}" "${LNCRAWL_DIR}"
+  git init -q "${LNCRAWL_DIR}"
+  git -C "${LNCRAWL_DIR}" remote add origin "${LNCRAWL_REPO}"
+  git -C "${LNCRAWL_DIR}" -c core.autocrlf=false fetch --depth 1 origin "${LNCRAWL_COMMIT}"
+  git -C "${LNCRAWL_DIR}" checkout -q FETCH_HEAD
 else
-  say "Keeping existing lncrawl checkout at ${LNCRAWL_DIR}"
+  git -C "${LNCRAWL_DIR}" config core.autocrlf false
+  current="$(git -C "${LNCRAWL_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  if [ "${current}" != "${LNCRAWL_COMMIT}" ]; then
+    say "Moving lncrawl checkout from ${current:0:10} to ${LNCRAWL_COMMIT:0:10}"
+    git -C "${LNCRAWL_DIR}" -c core.autocrlf=false fetch --depth 1 origin "${LNCRAWL_COMMIT}"
+    # The tree only ever holds upstream code plus our patches, which are
+    # re-applied below; discarding local edits is safe and fixes a checkout
+    # made with autocrlf enabled.
+    git -C "${LNCRAWL_DIR}" reset -q --hard FETCH_HEAD
+  else
+    say "Keeping existing lncrawl checkout at ${LNCRAWL_DIR}"
+  fi
 fi
 
 if [ ! -x "${LNCRAWL_VENV}/bin/python" ]; then
