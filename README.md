@@ -58,6 +58,13 @@ artifacts) and moves the result into the job sandbox before verification.
 - **Rust** (stable) and **Node.js 20+**
 - **Python 3.10+** for all three engines (`lncrawl`, `gallery-dl`, `aget`)
 
+On Windows, install Python and Git without administrator rights:
+
+```powershell
+winget install -e --id Python.Python.3.12
+winget install -e --id Git.Git
+```
+
 On Arch:
 
 ```bash
@@ -75,18 +82,32 @@ Tauri's own system dependencies (WebKitGTK, etc.) are listed in the
 
 ### 2. Download engines
 
+Linux and macOS:
+
 ```bash
 ./scripts/install-tools.sh
 ```
 
-The script installs into user-owned locations and is safe to re-run:
+Windows (PowerShell, no administrator rights, no WSL):
 
-| What        | Where                                                     |
-| ----------- | --------------------------------------------------------- |
-| `lncrawl`   | `~/.local/bin/lncrawl` → source checkout + venv under `~/.local/share/novelforge/tools/` |
-| `gallery-dl`| `~/.local/bin/gallery-dl` → Python venv under `~/.local/share/novelforge/tools/` |
-| `aget`      | `~/.local/bin/aget` → venv + checkout under `~/.local/share/novelforge/tools/` |
-| Chromium    | Playwright browser cache (for `aget`)                     |
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 webnovel
+powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 all -SkipBrowser
+```
+
+Both scripts install into user-owned locations and are safe to re-run:
+
+| What        | Linux / macOS                                             | Windows |
+| ----------- | --------------------------------------------------------- | ------- |
+| `lncrawl`   | `~/.local/bin/lncrawl` → source checkout + venv under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\lncrawl.cmd` |
+| `gallery-dl`| `~/.local/bin/gallery-dl` → Python venv under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\gallery-dl.cmd` |
+| `aget`      | `~/.local/bin/aget` → venv + checkout under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\aget.cmd` |
+| Chromium    | Playwright browser cache (for `aget`)                     | `%LOCALAPPDATA%\ms-playwright` (for `aget`) |
+
+`-SkipBrowser` skips the ~170 MB Playwright Chromium download. LibGen and WeLib
+keep working; Anna's Archive and OceanOfPDF are reported as unavailable until
+Chromium is installed.
 
 `lncrawl` is installed from source at the pinned release so NovelForge can
 apply the source patches in `scripts/patches/` (NovelFull AJAX catalogue and
@@ -94,8 +115,10 @@ metadata selectors, Divine Dao Library's redesigned theme, and the NovelPing
 adapter). Re-running `scripts/apply-lncrawl-patches.sh` is safe and only applies
 missing patches.
 
-Make sure `~/.local/bin` is on `PATH`. NovelForge also accepts explicit paths in
-**Settings → Toolchain paths** if auto-discovery fails.
+Make sure `~/.local/bin` is on `PATH` on Linux/macOS. NovelForge also accepts
+explicit paths in **Settings → Toolchain paths** if auto-discovery fails. On
+Windows no `PATH` edit is needed: the app searches
+`%LOCALAPPDATA%\novelforge\bin` directly.
 
 ### 3. Run
 
@@ -111,6 +134,12 @@ npm run tauri build
 ```
 
 Bundles land in `src-tauri/target/release/bundle/`.
+
+Windows installers are built by `.github/workflows/windows-build.yml`
+(`windows-latest`, NSIS only — MSI is skipped because debloated Windows images
+often disable Windows Installer). Trigger it manually from **Actions →
+windows-build → Run workflow**, or push a `v*` tag. The `novelforge-windows-nsis`
+artifact contains the `.exe` and `SHA256SUMS.txt`.
 
 Frontend-only checks:
 

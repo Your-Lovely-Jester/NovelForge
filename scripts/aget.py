@@ -1486,12 +1486,20 @@ async def ocean_download(
     browser_args = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
     if headful:
         browser_args += ["--window-position=-2000,-2000", "--window-size=1280,900"]
-    browser = await uc.start(
-        headless=not headful,
-        user_data_dir=str(profile),
-        browser_executable_path=os.environ.get("NOVELFORGE_CHROMIUM", "/usr/bin/chromium"),
-        browser_args=browser_args,
-    )
+    browser_kwargs = {
+        "headless": not headful,
+        "user_data_dir": str(profile),
+        "browser_args": browser_args,
+    }
+    chromium = os.environ.get("NOVELFORGE_CHROMIUM")
+    if chromium is None and sys.platform.startswith("linux"):
+        # The Linux toolchain installs distro Chromium. Elsewhere let nodriver
+        # discover the browser, or use the Playwright Chromium path that
+        # NovelForge injects on Windows.
+        chromium = "/usr/bin/chromium"
+    if chromium:
+        browser_kwargs["browser_executable_path"] = chromium
+    browser = await uc.start(**browser_kwargs)
     try:
         page = await browser.get(f"{OCEAN_URL}/?s={urllib.parse.quote(query)}")
 

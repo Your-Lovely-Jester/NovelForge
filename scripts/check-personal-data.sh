@@ -18,7 +18,7 @@ status=0
 #    from matching.
 hits="$(
   grep -rInE '/(home|Users)/[A-Za-z0-9._-]+/' \
-    src src-tauri/src scripts/*.sh scripts/*.py \
+    src src-tauri/src scripts/*.sh scripts/*.py scripts/*.ps1 \
     package.json src-tauri/tauri.conf.json \
     --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude='*.spec.tsx' \
     --exclude='check-personal-data.sh' \

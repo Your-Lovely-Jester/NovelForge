@@ -1023,6 +1023,14 @@ impl CrawlSpawner {
         {
             command.env("LNCRAWL_DATA_PATH", directory);
         }
+        // aget's OceanOfPDF driver needs an explicit Chromium. The bundled
+        // Playwright browser is the only one the toolchain guarantees.
+        if self.engine == Engine::Books
+            && std::env::var_os("NOVELFORGE_CHROMIUM").is_none()
+            && let Some(chromium) = crate::tools::playwright_chromium_path()
+        {
+            command.env("NOVELFORGE_CHROMIUM", chromium);
+        }
 
         #[cfg(unix)]
         {

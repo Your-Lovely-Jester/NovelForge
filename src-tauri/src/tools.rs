@@ -76,7 +76,8 @@ fn resolve_lncrawl(settings: &Settings) -> Option<ResolvedTool> {
                 "/usr/local/bin/lncrawl",
                 "/usr/bin/lncrawl",
             ])
-        })?;
+        })
+        .or_else(|| installed_bin("lncrawl"))?;
 
     Some(ResolvedTool {
         display: program.to_string_lossy().to_string(),
@@ -100,7 +101,8 @@ fn resolve_gallery_dl(settings: &Settings) -> Option<ResolvedTool> {
                 "/usr/bin/gallery-dl",
                 "~/.local/share/novelforge/tools/gallery-dl-venv/bin/gallery-dl",
             ])
-        })?;
+        })
+        .or_else(|| installed_bin("gallery-dl"))?;
 
     Some(ResolvedTool {
         display: program.to_string_lossy().to_string(),
@@ -122,7 +124,8 @@ fn resolve_aget(settings: &Settings) -> Option<ResolvedTool> {
                 "~/.local/bin/aget",
                 "~/.local/share/novelforge/tools/annas-archive-downloader/aget",
             ])
-        })?;
+        })
+        .or_else(|| installed_bin("aget"))?;
 
     if path.extension().is_some_and(|ext| ext == "py") {
         let python = find_binary(&["python3", "/usr/bin/python3"])?;
@@ -162,6 +165,25 @@ fn find_binary(candidates: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Launchers written by `scripts/install-tools.ps1` on Windows:
+/// `%LOCALAPPDATA%\novelforge\bin`. `data_local_dir` is the same directory, so
+/// tool discovery works without editing PATH or rebooting. On Linux the bash
+/// installer writes to `~/.local/bin`, which `find_binary` already reaches via
+/// PATH; looking here as well is a harmless fallback.
+fn installed_bin(name: &str) -> Option<PathBuf> {
+    installed_bin_in(&dirs::data_local_dir()?.join("novelforge"), name)
+}
+
+/// Resolve `name` inside an installer bin directory. Split from
+/// [`installed_bin`] so the lookup order can be tested without touching the
+/// real `%LOCALAPPDATA%`.
+fn installed_bin_in(root: &Path, name: &str) -> Option<PathBuf> {
+    ["", ".exe", ".cmd"]
+        .into_iter()
+        .map(|extension| root.join("bin").join(format!("{name}{extension}")))
+        .find(|path| is_executable(path))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -213,7 +235,7 @@ async fn probe_lncrawl(settings: &Settings) -> ToolStatus {
             .map(|tool| tool.program.to_string_lossy().to_string()),
         version,
         detail: None,
-        hint: "curl -fsSL https://github.com/lncrawl/lightnovel-crawler/releases/latest/download/lncrawl-linux -o ~/.local/bin/lncrawl && chmod +x ~/.local/bin/lncrawl".to_string(),
+        hint: install_hint("webnovel"),
     }
 }
 
@@ -231,7 +253,7 @@ async fn probe_gallery_dl(settings: &Settings) -> ToolStatus {
         path: resolved.as_ref().map(|tool| tool.display.clone()),
         version,
         detail: Some("387 sites · 26 manga extractors · CBZ / ZIP".to_string()),
-        hint: "python3 -m pip install --user -U gallery-dl".to_string(),
+        hint: install_hint("manga"),
     }
 }
 
@@ -256,7 +278,18 @@ async fn probe_aget(settings: &Settings) -> ToolStatus {
             "Chromium missing — Anna's Archive/Ocean will be skipped; LibGen and WeLib still work"
                 .to_string()
         }),
-        hint: "Run scripts/install-tools.sh to provision aget, Playwright and Chromium".to_string(),
+        hint: install_hint("books"),
+    }
+}
+
+fn install_hint(component: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("Run scripts\\install-tools.ps1 {component} (PowerShell)")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("Run scripts/install-tools.sh {component}")
     }
 }
 
@@ -293,14 +326,90 @@ async fn probe(program: &Path, prefix: &[String], args: &[&str]) -> Option<Strin
 }
 
 fn playwright_chromium_installed() -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let cache = home.join(".cache/ms-playwright");
-    let Ok(entries) = std::fs::read_dir(cache) else {
-        return false;
-    };
-    entries
+    playwright_chromium_path().is_some()
+}
+
+/// Path to the Chromium binary Playwright downloaded for aget.
+///
+/// Playwright uses the platform cache directory (`~/.cache/ms-playwright` on
+/// Linux, `%LOCALAPPDATA%\ms-playwright` on Windows). aget's OceanOfPDF driver
+/// needs an explicit executable because nodriver cannot discover Playwright's
+/// private browser.
+pub fn playwright_chromium_path() -> Option<PathBuf> {
+    let cache = dirs::cache_dir()?.join("ms-playwright");
+    let mut installs: Vec<PathBuf> = std::fs::read_dir(cache)
+        .ok()?
         .flatten()
-        .any(|entry| entry.file_name().to_string_lossy().starts_with("chromium"))
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("chromium"))
+        .map(|entry| entry.path())
+        .collect();
+    // Several Playwright versions can be cached; newest first.
+    installs.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    installs
+        .iter()
+        .find_map(|directory| chromium_binary(directory))
+}
+
+fn chromium_binary(directory: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let candidates = [
+        directory.join("chrome-win64").join("chrome.exe"),
+        directory.join("chrome-win").join("chrome.exe"),
+    ];
+    #[cfg(not(windows))]
+    let candidates = [
+        directory.join("chrome-linux64").join("chrome"),
+        directory.join("chrome-linux").join("chrome"),
+    ];
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("novelforge-tools-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Path) {}
+
+    #[test]
+    fn installed_bin_finds_installer_shims() {
+        let root = scratch("installed-bin");
+        let shim = root.join("bin").join("lncrawl");
+        std::fs::write(&shim, "#!/bin/sh\n").unwrap();
+        make_executable(&shim);
+
+        assert_eq!(installed_bin_in(&root, "lncrawl"), Some(shim));
+        assert_eq!(installed_bin_in(&root, "gallery-dl"), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chromium_binary_matches_the_playwright_layout() {
+        let root = scratch("chromium");
+        #[cfg(windows)]
+        let downloaded = root.join("chrome-win64").join("chrome.exe");
+        #[cfg(not(windows))]
+        let downloaded = root.join("chrome-linux64").join("chrome");
+
+        std::fs::create_dir_all(downloaded.parent().unwrap()).unwrap();
+        std::fs::write(&downloaded, "").unwrap();
+        assert_eq!(chromium_binary(&root), Some(downloaded));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

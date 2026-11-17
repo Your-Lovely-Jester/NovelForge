@@ -126,8 +126,10 @@ with the message, a Reload button and Copy error, instead of a white window.
 - Pause/resume are Unix-only and now fail closed elsewhere.
 - `install-tools.sh` pins `gallery-dl 1.32.20`, `click 8.5.1`,
   `nodriver 0.50.99`, `playwright 1.65.0`, `rich 15.0.0`, and already pinned
-  lncrawl `v4.14.0`. Components can be installed separately. Native Windows
-  exits with an explicit message instead of half-installing bash wrappers.
+  lncrawl `v4.14.0`. Components can be installed separately.
+- `install-tools.ps1` is the native Windows counterpart (no WSL, no admin):
+  same pins, same patch order, `%LOCALAPPDATA%\novelforge\bin` shims. The bash
+  installer refuses MSYS/Cygwin and points at it.
 
 ---
 
@@ -142,12 +144,16 @@ Wine run as Windows validation.
 
 ### 4.2 Options, in order of preference
 
-1. **Windows VM** (QEMU/VirtualBox/Hyper-V, or a cloud Windows instance).
+1. **Native Windows machine or Windows VM** (the recommended path).
    - Install the WebView2 Evergreen Runtime if the image lacks it.
-   - Install the three engines natively:
-     `py -3 -m venv`, `pip install -e` lncrawl, `pip install gallery-dl==1.32.20`,
-     and the pinned aget deps. The bundled Windows installer must not depend on
-     the bash script.
+   - Install Python 3.10+ and Git (`winget install -e --id Python.Python.3.12`,
+     `winget install -e --id Git.Git`).
+   - From the repository checkout run
+     `powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1`.
+     It provisions lncrawl (editable + the eight source patches), gallery-dl,
+     aget and Playwright Chromium under `%LOCALAPPDATA%\novelforge`, writes
+     `.cmd` shims into `%LOCALAPPDATA%\novelforge\bin`, and needs no
+     administrator rights, no WSL, no `PATH` edit and no reboot.
    - Run the acceptance list below.
 2. **GitHub Actions `windows-latest`** for build, compile checks and packaging.
    `.github/workflows/windows-build.yml` runs `cargo fmt --check`,
@@ -200,9 +206,8 @@ the Windows Installer service or Windows Update.
   can be attributed to the image rather than the app.
 - Items that need no Python engines and can be checked immediately: install,
   first launch, Settings paths, About diagnostics, single instance, quit modal,
-  library UI, theme/DPI. The crawl items will fail until the native Windows tool
-  bootstrap exists (NF-057), so those failures are expected findings, not
-  regressions.
+  library UI, theme/DPI. Run `scripts\install-tools.ps1` before the crawl items;
+  a missing engine is now a toolchain problem, not an image problem.
 
 Record the result as "smoke test on a modified Windows 10 image"; only a stock
 Windows 10/11 VM or physical machine closes NF-057.
@@ -339,7 +344,8 @@ may stay, but it is test-only and should not be in the installer either.
   see §6).
 - `scripts/patch_lncrawl_scraper.py` and its tests.
 - `scripts/aget.py` (NovelForge's verified LibGen-first variant).
-- `scripts/install-tools.sh` (now pinned and component-selectable).
+- `scripts/install-tools.sh` (now pinned and component-selectable) and
+  `scripts/install-tools.ps1` (native Windows, same pins and patch order).
 
 ### 7.4 Suggested build-exclude
 
@@ -411,6 +417,10 @@ npm run build
 ./scripts/install-tools.sh webnovel
 ./scripts/install-tools.sh manga
 ./scripts/install-tools.sh books
+
+# Windows (PowerShell, no admin, no WSL)
+powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 all
+powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 all -SkipBrowser
 ```
 
 Live QA remains opt-in and is documented in `docs/QA_MATRIX.md`
