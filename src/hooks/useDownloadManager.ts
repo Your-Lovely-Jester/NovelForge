@@ -147,7 +147,19 @@ export function useDownloadManager() {
 
       if (taskResult.status === "fulfilled") setTasks(taskResult.value);
       if (toolResult.status === "fulfilled") setTools(toolResult.value);
+      // Boot failures used to be invisible: the page simply showed every tool
+      // as missing and every settings control as inert. Name the failure.
+      if (toolResult.status === "rejected") {
+        showNotice("error", "Tool check failed", errorMessage(toolResult.reason));
+      }
       if (settingsResult.status === "fulfilled") setSettings(settingsResult.value);
+      if (settingsResult.status === "rejected") {
+        showNotice(
+          "error",
+          "Settings unavailable",
+          errorMessage(settingsResult.reason),
+        );
+      }
       if (libraryResult.status === "fulfilled") setLibrary(libraryResult.value);
       if (infoResult.status === "fulfilled") setAppInfo(infoResult.value);
       setLoading(false);
@@ -232,7 +244,7 @@ export function useDownloadManager() {
       disposed = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [refreshLibrary]);
+  }, [refreshLibrary, showNotice]);
 
   useEffect(() => {
     if (!notice) return;

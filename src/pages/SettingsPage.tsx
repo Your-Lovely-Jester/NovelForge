@@ -115,11 +115,13 @@ export function SettingsPage({ manager }: { manager: DownloadManager }) {
     }
   }
 
+  // If the initial get_settings call failed, treat the form as unsaved rather
+  // than leaving Save disabled forever with no explanation.
   const dirty = useMemo(
     () =>
       manager.settings
         ? JSON.stringify(form) !== JSON.stringify(manager.settings)
-        : false,
+        : true,
     [form, manager.settings],
   );
 
