@@ -286,6 +286,22 @@ if ($wantWebnovel) {
         "lncrawl-v4.14.0-offline-source-index.patch"
     )
     $patchDir = Join-Path $PSScriptRoot "patches"
+    # The installer's own commit is the first question in any patch failure:
+    # an old copy of this script cannot normalise anything.
+    $installerProbe = Invoke-Probe -FilePath "git" -ArgumentList @(
+        "-C", $PSScriptRoot, "rev-parse", "--short", "HEAD"
+    )
+    $installerCommit = if ($installerProbe.ExitCode -eq 0) {
+        ($installerProbe.Output -join "").Trim()
+    } else {
+        "unknown (not a git checkout)"
+    }
+    $lncrawlHead = ((Invoke-Probe -FilePath "git" -ArgumentList @(
+        "-C", $LncrawlDir, "rev-parse", "HEAD"
+    )).Output -join "").Trim()
+    $lncrawlShort = $lncrawlHead.Substring(0, [Math]::Min(10, $lncrawlHead.Length))
+    Write-Host "    installer $installerCommit | lncrawl $lncrawlShort" -ForegroundColor DarkGray
+
     # A Windows clone with core.autocrlf=true checks these files out with CRLF,
     # and git then rejects every hunk against the LF lncrawl checkout. Write an
     # LF copy to a scratch directory and apply that instead.
@@ -297,7 +313,9 @@ if ($wantWebnovel) {
             Fail "Patch not found: $source"
         }
         $patch = Join-Path $patchTemp $name
-        $text = [System.IO.File]::ReadAllText($source) -replace "`r`n", "`n"
+        $raw = [System.IO.File]::ReadAllText($source)
+        $patchHasCr = $raw.Contains("`r")
+        $text = $raw -replace "`r`n", "`n"
         [System.IO.File]::WriteAllText($patch, $text)
 
         $reverse = Invoke-Probe -FilePath "git" -ArgumentList @(
@@ -307,15 +325,38 @@ if ($wantWebnovel) {
             Write-Host "    Already applied: $name" -ForegroundColor DarkGray
             continue
         }
+
+        # No --quiet: the error text is the diagnostic when this fails.
+        $applyFlags = @()
         $forward = Invoke-Probe -FilePath "git" -ArgumentList @(
-            "-C", $LncrawlDir, "apply", "--check", "--quiet", $patch
+            @("-C", $LncrawlDir, "apply", "--check") + $applyFlags + @($patch)
         )
         if ($forward.ExitCode -ne 0) {
-            $detail = ($forward.Output | Select-Object -Last 3) -join " "
-            Fail "Patch does not apply cleanly: $name (lncrawl version mismatch?) $detail"
+            # Second chance: some checkouts still produce whitespace-only
+            # differences (CRLF from an older clone, smart quotes in an editor).
+            $relaxed = Invoke-Probe -FilePath "git" -ArgumentList @(
+                "-C", $LncrawlDir, "apply", "--check", "--ignore-whitespace", $patch
+            )
+            if ($relaxed.ExitCode -eq 0) {
+                $applyFlags = @("--ignore-whitespace")
+                Write-Warn "$name needed --ignore-whitespace; the checkout's line endings are not clean."
+            } else {
+                $detail = ($relaxed.Output | Select-Object -Last 5) -join "`n    "
+                $eol = ((Invoke-Probe -FilePath "git" -ArgumentList @(
+                    "-C", $LncrawlDir, "ls-files", "--eol", "sources/en/n/novelfull.py"
+                )).Output -join "").Trim()
+                Fail @"
+Patch does not apply cleanly: $name
+    installer:    $installerCommit
+    lncrawl HEAD: $lncrawlHead (pinned $LncrawlCommit)
+    patch CR:     $patchHasCr
+    target EOL:   $eol
+    git:          $detail
+"@
+            }
         }
         Invoke-Native -FilePath "git" -Description "apply $name" -ArgumentList @(
-            "-C", $LncrawlDir, "apply", $patch
+            @("-C", $LncrawlDir, "apply") + $applyFlags + @($patch)
         )
         Write-Host "    Applied: $name" -ForegroundColor DarkGray
     }
