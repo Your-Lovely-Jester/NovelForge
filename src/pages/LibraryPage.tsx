@@ -389,6 +389,13 @@ export function LibraryPage({ manager }: { manager: DownloadManager }) {
                 onUpdate={() => void quickAction(novel, "update")}
                 onRefresh={() => setConfirm({ kind: "refresh", novel })}
                 onChapters={() => void manager.openChapters(novel.folder)}
+                onRepack={
+                  // A comic folder that lost (or never had) its archive shows
+                  // the page tree but no CBZ action; offer to rebuild it.
+                  !novel.epubPath && !novel.archivePath
+                    ? () => void manager.repackManga(novel.folder)
+                    : undefined
+                }
                 onIndex={() => void viewIndex(novel)}
                 onCopySource={() => void copySource(novel)}
                 onFaster={() => void checkFasterSource(novel)}
@@ -679,6 +686,7 @@ function NovelCard({
   onUpdate,
   onRefresh,
   onChapters,
+  onRepack,
   onIndex,
   onCopySource,
   onFaster,
@@ -696,6 +704,8 @@ function NovelCard({
   onUpdate: () => void;
   onRefresh: () => void;
   onChapters: () => void;
+  /** Present when the folder has pages but no packed archive. */
+  onRepack?: () => void;
   onIndex: () => void;
   onCopySource: () => void;
   onFaster: () => void;
@@ -892,6 +902,18 @@ function NovelCard({
               >
                 <FileArchive className="h-3 w-3" strokeWidth={1.8} />
                 Open CBZ
+              </button>
+            )}
+            {onRepack && (
+              <button
+                type="button"
+                onClick={onRepack}
+                disabled={busy}
+                className="btn-secondary h-7 px-2.5"
+                title="Rebuild the packed CBZ from the page folders"
+              >
+                <Archive className="h-3 w-3" strokeWidth={1.8} />
+                Make CBZ
               </button>
             )}
             <button

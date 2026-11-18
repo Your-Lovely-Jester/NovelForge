@@ -738,6 +738,46 @@ pub fn open_file(state: State<'_, AppState>, path: String) -> AppResult<()> {
     open_in_file_manager(&target)
 }
 
+/// Rebuilds the packed CBZ for a comic folder that only carries the expanded
+/// `chapters/` tree. Older builds surfaced the image folders, so an existing
+/// library can hold comics with no archive; repacking repairs them in place
+/// instead of asking for another crawl.
+#[tauri::command]
+pub fn repack_manga(state: State<'_, AppState>, folder: String) -> AppResult<String> {
+    let settings = current_settings(&state);
+    let root = prepare_download_dir(&settings)?;
+    repack_structured_comic(&root, &folder, &settings.manga_format)
+}
+
+/// The filesystem half of [`repack_manga`], separated so the refusals can be
+/// tested without a Tauri state handle.
+fn repack_structured_comic(root: &Path, folder: &str, format: &str) -> AppResult<String> {
+    let target = paths::contained_path(root, Path::new(folder))?;
+    if !target.is_dir() {
+        return Err(AppError::msg(format!("Not a folder: {}", target.display())));
+    }
+    let metadata = export::read_export_metadata(&target).ok_or_else(|| {
+        AppError::msg("This folder has no metadata.json, so it is not a structured download.")
+    })?;
+    // A novel folder already ships an EPUB and its `chapters/` entries are
+    // XHTML files, not pages; repacking is only meaningful for comics.
+    if metadata.epub.is_some() {
+        return Err(AppError::msg(
+            "This folder already has an EPUB; rebuilding a comic archive only applies to manga.",
+        ));
+    }
+    let title = if metadata.title.trim().is_empty() {
+        target
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "manga".to_string())
+    } else {
+        metadata.title.clone()
+    };
+    let path = export::repack_manga_chapters(&target, format, &title).map_err(AppError::msg)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn open_downloads(state: State<'_, AppState>) -> AppResult<()> {
     let settings = state
@@ -1077,6 +1117,45 @@ mod tests {
                 .iter()
                 .any(|archive| archive.folder == "structured")
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repack_builds_a_comic_archive_and_refuses_a_novel() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-repack-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let comic = root.join("comic-0123abcd");
+        let page = comic.join("chapters/0001 - Chapter 1");
+        std::fs::create_dir_all(&page).unwrap();
+        std::fs::write(page.join("001.png"), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]).unwrap();
+        std::fs::write(
+            comic.join("metadata.json"),
+            br#"{"title":"My Comic","epub":null}"#,
+        )
+        .unwrap();
+
+        let archive = repack_structured_comic(&root, comic.to_str().unwrap(), "cbz")
+            .expect("rebuild the comic archive");
+        assert!(archive.ends_with("My Comic.cbz"), "{archive}");
+        assert!(Path::new(&archive).is_file());
+
+        // A novel folder already ships an EPUB; its `chapters/` holds XHTML, so
+        // repacking it would produce an archive of prose, not pages.
+        let novel = root.join("novel");
+        std::fs::create_dir_all(novel.join("chapters")).unwrap();
+        std::fs::write(novel.join("chapters/0001 - Chapter 1.xhtml"), b"<html/>").unwrap();
+        std::fs::write(
+            novel.join("metadata.json"),
+            br#"{"title":"Book","epub":"Book.epub"}"#,
+        )
+        .unwrap();
+        let error = repack_structured_comic(&root, novel.to_str().unwrap(), "cbz")
+            .expect_err("a novel folder must be refused");
+        assert!(error.to_string().contains("EPUB"), "{error}");
 
         let _ = std::fs::remove_dir_all(&root);
     }

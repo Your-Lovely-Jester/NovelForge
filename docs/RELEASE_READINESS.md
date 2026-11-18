@@ -47,7 +47,7 @@ a port task (§5).
 | NF-063 lncrawl database inside the work dir | **DONE** | `spawn::native_path` strips the verbatim `\\?\` prefix at the process boundary; `lncrawl_data_env` pins `LNCRAWL_DATA_PATH` + `DATABASE_URL`; test `lncrawl_env_pins_the_database_to_the_work_dir` |
 | NF-064 diagnostics copy fallback | **DONE** | `src/lib/clipboard.ts` (Clipboard API → `execCommand`); About shows the report in a selectable textarea when both are blocked; 3 vitest cases |
 | NF-065 Windows pause/resume | **DONE** | `spawn::suspend_process_tree` / `resume_process_tree` snapshot the live tree (`CreateToolhelp32Snapshot`), suspend parents before children and call `NtSuspendProcess` / `NtResumeProcess` per member; a root failure rolls the tree back. `process::pause_process` / `resume_process` use it. Windows tests: `pause_stops_the_whole_tree_and_resume_releases_it` (launcher + worker prove a whole-tree stop), `pause_refuses_a_process_that_is_already_gone` |
-| NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds the packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ** button; `process_manga_download` logs `Comic archive · <absolute path> · <size>` and `export::repack_manga_chapters` rebuilds a missing archive from `chapters/` instead of leaving a folder of images |
+| NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds the packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ** button; `process_manga_download` logs `Comic archive · <absolute path> · <size>` and `export::repack_manga_chapters` rebuilds a missing archive from `chapters/` instead of leaving a folder of images, and the new `repack_manga` command + **Make CBZ** button repair a folder that already lost it (test `repack_builds_a_comic_archive_and_refuses_a_novel`) |
 | NF-067 TOC walk visibility + one walk per book | **DONE** | `metadata::fetch_chapter_index_reporting` reports `(page, pages)`; `novel://index-progress` drives `TOC page N / M`; `index_walk_lock` serialises walks per cache key so a waiter returns the finished cache instead of re-walking; Start is disabled while the first index loads. The 700 ms/request floor is unchanged (~50 s for a 2,700-chapter book) |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
 | NF-058 Android | **OPEN (spike)** | §5; not a port |
@@ -56,7 +56,7 @@ a port task (§5).
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
 | NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
 
-Gate after the batch: **210 Rust lib tests + 2 integration + 39 frontend + 38
+Gate after the batch: **211 Rust lib tests + 2 integration + 39 frontend + 38
 Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production build
 green, and the personal-data/fixture scan clean.
 
@@ -225,6 +225,10 @@ Wine run as Windows validation.
       Library card's **Open CBZ** opens it in the default reader. The log shows
       `Comic archive · <absolute path> · <size>`. If the archive is missing,
       the log shows `… is missing after export · rebuilding …`.
+- [ ] An existing comic folder with no archive shows **Make CBZ** instead of
+      **Open CBZ**; pressing it writes `<Title>.cbz`, reports the path, and the
+      card switches to **Open CBZ**. A novel folder is refused with the EPUB
+      explanation.
 - [ ] The chapter list shows `TOC page N / M` while it loads and does not
       restart when Start download is pressed; the first load takes roughly
       `pages × 0.75 s` (about a minute for a 3,000-chapter book).

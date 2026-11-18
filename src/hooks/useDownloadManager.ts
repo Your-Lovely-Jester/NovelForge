@@ -480,6 +480,19 @@ export function useDownloadManager() {
     [showNotice],
   );
 
+  const repackManga = useCallback(
+    async (folder: string) => {
+      try {
+        const path = await api.repackManga(folder);
+        await refreshLibrary();
+        showNotice("success", "Comic archive built", path);
+      } catch (error) {
+        showNotice("error", "Could not build the comic archive", errorMessage(error));
+      }
+    },
+    [refreshLibrary, showNotice],
+  );
+
   const openChapters = useCallback(
     async (folder: string) => {
       try {
@@ -769,6 +782,7 @@ export function useDownloadManager() {
     verify,
     reveal,
     openFile,
+    repackManga,
     openChapters,
     deleteNovel,
     cleanupEngineWork,

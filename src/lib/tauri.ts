@@ -137,6 +137,7 @@ export const api = {
   revealPath: (path: string) =>
     invokeCommand<void>("reveal_path", { path }),
   openFile: (path: string) => invokeCommand<void>("open_file", { path }),
+  repackManga: (folder: string) => invokeCommand<string>("repack_manga", { folder }),
   openDownloads: () => invokeCommand<void>("open_downloads"),
   getAppInfo: () => invokeCommand<AppInfo>("get_app_info"),
   getDiagnostics: () => invokeCommand<string>("get_diagnostics"),
