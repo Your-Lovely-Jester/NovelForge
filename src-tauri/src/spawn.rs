@@ -109,16 +109,17 @@ fn nt_process_call(resume: bool) -> Result<NtProcessCall, String> {
 
     let slot = if resume { &RESUME } else { &SUSPEND };
     let resolved = slot.get_or_init(|| unsafe {
-        let module: HMODULE = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+        // `c"..."` is the clippy-approved form: it produces a real C string
+        // instead of hand-built bytes with a trailing NUL.
+        let module: HMODULE = GetModuleHandleA(c"ntdll.dll".as_ptr().cast::<u8>());
         if module.is_null() {
             return None;
         }
-        let name: &[u8] = if resume {
-            b"NtResumeProcess\0"
+        let address = if resume {
+            GetProcAddress(module, c"NtResumeProcess".as_ptr().cast::<u8>())
         } else {
-            b"NtSuspendProcess\0"
-        };
-        let address = GetProcAddress(module, name.as_ptr())?;
+            GetProcAddress(module, c"NtSuspendProcess".as_ptr().cast::<u8>())
+        }?;
         Some(std::mem::transmute::<
             unsafe extern "system" fn() -> isize,
             NtProcessCall,
