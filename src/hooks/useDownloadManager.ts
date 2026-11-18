@@ -483,11 +483,11 @@ export function useDownloadManager() {
   const repackManga = useCallback(
     async (folder: string) => {
       try {
-        const path = await api.repackManga(folder);
+        const summary = await api.repackManga(folder);
         await refreshLibrary();
-        showNotice("success", "Comic archive built", path);
+        showNotice("success", "Comic archives built", summary);
       } catch (error) {
-        showNotice("error", "Could not build the comic archive", errorMessage(error));
+        showNotice("error", "Could not build the comic archives", errorMessage(error));
       }
     },
     [refreshLibrary, showNotice],

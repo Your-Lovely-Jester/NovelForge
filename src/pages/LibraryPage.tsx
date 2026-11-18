@@ -370,7 +370,9 @@ export function LibraryPage({ manager }: { manager: DownloadManager }) {
                 onOpen={() => void manager.reveal(novel.folder)}
                 onArchive={
                   novel.archivePath
-                    ? () => void manager.openFile(novel.archivePath as string)
+                    ? novel.archiveCount > 1
+                      ? () => void manager.openChapters(novel.folder)
+                      : () => void manager.openFile(novel.archivePath as string)
                     : undefined
                 }
                 onVerify={() => {
@@ -390,9 +392,10 @@ export function LibraryPage({ manager }: { manager: DownloadManager }) {
                 onRefresh={() => setConfirm({ kind: "refresh", novel })}
                 onChapters={() => void manager.openChapters(novel.folder)}
                 onRepack={
-                  // A comic folder that lost (or never had) its archive shows
-                  // the page tree but no CBZ action; offer to rebuild it.
-                  !novel.epubPath && !novel.archivePath
+                  // A comic folder that still carries an expanded image tree or
+                  // one series-wide archive shows the page tree but no
+                  // per-chapter CBZs; offer to convert it in place.
+                  !novel.epubPath && (!novel.archivePath || novel.archiveCount === 0)
                     ? () => void manager.repackManga(novel.folder)
                     : undefined
                 }
@@ -898,10 +901,14 @@ function NovelCard({
                 type="button"
                 onClick={onArchive}
                 className="btn-secondary h-7 px-2.5"
-                title="Open the packed CBZ/ZIP in your comic reader"
+                title={
+                  novel.archiveCount > 1
+                    ? `Open the folder holding ${novel.archiveCount} chapter CBZ files`
+                    : "Open the packed CBZ/ZIP in your comic reader"
+                }
               >
                 <FileArchive className="h-3 w-3" strokeWidth={1.8} />
-                Open CBZ
+                {novel.archiveCount > 1 ? "Open CBZs" : "Open CBZ"}
               </button>
             )}
             {onRepack && (
@@ -910,7 +917,7 @@ function NovelCard({
                 onClick={onRepack}
                 disabled={busy}
                 className="btn-secondary h-7 px-2.5"
-                title="Rebuild the packed CBZ from the page folders"
+                title="Convert this comic to one CBZ per chapter"
               >
                 <Archive className="h-3 w-3" strokeWidth={1.8} />
                 Make CBZ

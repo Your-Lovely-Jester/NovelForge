@@ -15,6 +15,7 @@ export function makeNovel(overrides: Partial<LibraryNovel> = {}): LibraryNovel {
     modified: 1,
     epubPath: null,
     archivePath: null,
+    archiveCount: 0,
     retryable: false,
     provenance: null,
     diskBytes: 0,

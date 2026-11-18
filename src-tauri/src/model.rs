@@ -297,6 +297,10 @@ pub struct LibraryNovel {
     /// tree. `None` for novels (their EPUB is `epub_path`).
     #[serde(default)]
     pub archive_path: Option<String>,
+    /// Number of per-chapter archives under `chapters/`. `0` means this folder
+    /// has no chapter archives (a legacy single archive, or none at all).
+    #[serde(default)]
+    pub archive_count: u32,
     /// True when this folder can be retried/updated through the webnovel
     /// pipeline (structured EPUB with an http(s) source URL).
     pub retryable: bool,

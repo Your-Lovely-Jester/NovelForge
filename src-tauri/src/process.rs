@@ -1081,7 +1081,13 @@ impl CrawlSpawner {
             // Rich wraps long artifact paths at its detected width; widen it so
             // the printed output path stays on one line and can be captured.
             .env("COLUMNS", "240")
-            .env("PYTHONUNBUFFERED", "1");
+            .env("PYTHONUNBUFFERED", "1")
+            // Python on Windows falls back to the ANSI code page when stdout is
+            // a pipe. aget and lncrawl print `…` and `·`; a cp1252 stream can
+            // raise UnicodeEncodeError and kill the engine before it reports
+            // anything. Force UTF-8 for both streams.
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8");
         if self.engine == Engine::Webnovel
             && let Some(directory) = &self.work_dir
         {
@@ -1322,7 +1328,12 @@ async fn run_job(
     }
     let done = Arc::new(AtomicBool::new(false));
     let artifacts: Arc<Mutex<ArtifactCapture>> = Arc::new(Mutex::new(ArtifactCapture::default()));
-    let error_tail = Arc::new(Mutex::new(ErrorTail::default()));
+    // aget writes its per-source reasons to stdout and exits 1; keep them all
+    // so a failed book job can name the sources instead of only the exit code.
+    let error_tail = Arc::new(Mutex::new(ErrorTail {
+        keep_all_stdout: engine == Engine::Books,
+        ..Default::default()
+    }));
     let mut pid = child.id().unwrap_or(0);
     let mut timings = JobTimings::default();
 
@@ -1493,7 +1504,11 @@ async fn run_job(
                 retried = true;
                 attempt += 1;
                 if let Ok(mut tail) = error_tail.lock() {
-                    *tail = ErrorTail::default();
+                    let keep_all_stdout = tail.keep_all_stdout;
+                    *tail = ErrorTail {
+                        keep_all_stdout,
+                        ..Default::default()
+                    };
                 }
                 if let Ok(mut capture) = artifacts.lock() {
                     *capture = ArtifactCapture::default();
@@ -1547,7 +1562,22 @@ async fn run_job(
                 message.push_str(&detail);
             }
         }
-    } else if outcome.status == TaskStatus::Verifying {
+    }
+
+    // A book failure with no EPUB is a "not found" only after the sources had
+    // their say. Keep the engine's own per-source reasons instead of replacing
+    // them with a generic sentence the user cannot act on.
+    if engine == Engine::Books
+        && outcome.status == TaskStatus::Failed
+        && !destination_has_epub(&destination)
+    {
+        let detail = error_tail
+            .lock()
+            .ok()
+            .and_then(|tail| tail.failure_detail());
+        outcome.message = Some(book_failure_message(detail.as_deref()));
+    }
+    if outcome.status == TaskStatus::Verifying {
         // NF-042: the source reason gathered from stdout must survive
         // verification. Only a licensing note replaces it; previously this
         // branch assigned `None` and silently dropped the real cause.
@@ -1596,19 +1626,20 @@ async fn run_job(
 
         let packed = match source_root {
             Some(root) => {
-                export::package_manga_directory(&root, &destination, &settings.manga_format, &title)
+                export::package_manga_directory(&root, &destination, &settings.manga_format)
             }
             None => Err("gallery-dl work directory is missing".to_string()),
         };
         match packed {
-            Ok(path) => log_system(
+            Ok(package) => log_system(
                 &app,
                 &job_id,
                 format!(
-                    "Packed {} · {} · {}",
-                    file_name(&path),
+                    "Packed {} chapter archive(s) · {} page(s) · {} · {}",
+                    package.chapters.len(),
+                    package.image_count,
                     format_duration(pack_started.elapsed()),
-                    path.display()
+                    destination.join("chapters").display()
                 ),
             ),
             Err(error) => {
@@ -1720,6 +1751,17 @@ fn destination_has_epub(destination: &Path) -> bool {
     })
 }
 
+/// A failed book job always names what aget reported. The generic sentence
+/// explains the contract; the tail says why this ISBN did not clear it.
+fn book_failure_message(detail: Option<&str>) -> String {
+    const BASE: &str = "Book not found: no catalogue-verified EPUB was produced. \
+Check the ISBN, try another source, or read the source lines below.";
+    match detail.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(detail) => format!("{BASE} aget: {detail}"),
+        None => BASE.to_string(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn finalize(
     app: AppHandle,
@@ -1727,7 +1769,7 @@ async fn finalize(
     job_id: String,
     destination: PathBuf,
     engine: Engine,
-    mut outcome: JobOutcome,
+    outcome: JobOutcome,
     source_url: String,
     options: DownloadOptions,
     settings: Settings,
@@ -1768,16 +1810,8 @@ async fn finalize(
         TaskStatus::Verifying
     };
 
-    // A books failure with no EPUB is a "not found", not a transport mystery.
-    // Saying so keeps a series run explainable while the other books continue.
-    if engine == Engine::Books
-        && outcome.status == TaskStatus::Failed
-        && !destination_has_epub(&destination)
-    {
-        outcome.message = Some(
-            "Book not found: no catalogue-verified EPUB was produced (network failure, mirror block, or no row cleared the match threshold). Check the near-miss log, the ISBN, or try another source.".to_string(),
-        );
-    }
+    // `run_job` already replaced a Books failure with the per-source reasons
+    // aget printed, so `finalize` must not overwrite them here.
 
     set_phase(&state, &app, &job_id, TaskPhase::Auditing);
     let verifying = update_task(&state, &job_id, |task| {
@@ -1872,6 +1906,15 @@ async fn finalize(
     // contains one bundled book.
     for path in scanned {
         if primary.as_ref().is_some_and(|value| value == &path) {
+            continue;
+        }
+        // Per-chapter manga archives are consumed by `process_manga_download`;
+        // they are already verified there. Re-reading them here would add
+        // duplicate rows and a second full pass over the pages.
+        let consumed = outputs
+            .iter()
+            .any(|output| output.path == path.to_string_lossy());
+        if consumed {
             continue;
         }
         let extension = path
@@ -2537,61 +2580,103 @@ async fn process_manga_download(
     export_failed: &mut Option<String>,
     timings: &mut JobTimings,
 ) {
-    let extension = primary_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !matches!(extension.as_str(), "cbz" | "zip") {
-        let report = verify::verify_any(primary_path, false);
-        if report.ok {
-            outputs.push(output_file(primary_path, Some(report)));
-        } else {
-            let _ = std::fs::remove_file(primary_path);
-            *export_failed = Some(format!(
-                "Rejected {}: {}",
-                file_name(primary_path),
-                report.detail
-            ));
-        }
-        return;
-    }
-
-    let audit = match export::audit_cbz(primary_path) {
-        Ok(value) => value,
-        Err(error) => {
-            *export_failed = Some(format!("Could not audit manga archive: {error}"));
-            return;
+    // Per-chapter archives are the deliverable. A folder from an older build
+    // still looks like one series archive or an expanded image tree, so repair
+    // it in place before auditing.
+    let package = match export::audit_chapter_archives(destination) {
+        Ok(package) => package,
+        Err(_) => {
+            let format = primary_path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase)
+                .filter(|value| matches!(value.as_str(), "cbz" | "zip"))
+                .unwrap_or_else(|| "cbz".to_string());
+            match export::repack_manga_chapters(destination, &format, title) {
+                Ok(repaired) => {
+                    log_system(
+                        app,
+                        job_id,
+                        format!(
+                            "Rebuilt {} chapter archive(s) · {} duplicate(s) removed",
+                            repaired.archives.len(),
+                            repaired.removed
+                        ),
+                    );
+                    match export::audit_chapter_archives(destination) {
+                        Ok(package) => package,
+                        Err(error) => {
+                            *export_failed = Some(format!(
+                                "Could not audit the rebuilt manga archives: {error}"
+                            ));
+                            log_stderr(
+                                app,
+                                job_id,
+                                format!("Could not audit the rebuilt manga archives: {error}"),
+                            );
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    // Some gallery-dl extractors hand back a single file that is
+                    // not an image archive. Verify that file with the generic
+                    // path instead of pretending it is a chapter set.
+                    let extension = primary_path
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if !matches!(extension.as_str(), "cbz" | "zip") {
+                        let report = verify::verify_any(primary_path, false);
+                        if report.ok {
+                            outputs.push(output_file(primary_path, Some(report)));
+                        } else {
+                            let _ = std::fs::remove_file(primary_path);
+                            *export_failed = Some(format!(
+                                "Rejected {}: {}",
+                                file_name(primary_path),
+                                report.detail
+                            ));
+                        }
+                        return;
+                    }
+                    *export_failed = Some(format!("Could not pack the chapter archives: {error}"));
+                    log_stderr(
+                        app,
+                        job_id,
+                        format!("Could not pack the chapter archives: {error}"),
+                    );
+                    return;
+                }
+            }
         }
     };
+
     let expected = options
         .chapters
         .as_deref()
         .and_then(export::parse_selection_serials)
         .map(|values| values.len() as u32);
-    let empty = audit
-        .chapters
-        .iter()
-        .filter(|chapter| chapter.images.is_empty())
-        .count();
-    let ok = !audit.chapters.is_empty()
+    let empty = package.empty_chapters;
+    let ok = !package.chapters.is_empty()
         && empty == 0
-        && expected.is_none_or(|value| audit.chapters.len() as u32 >= value);
+        && expected.is_none_or(|value| package.chapters.len() as u32 >= value);
     let detail = if ok {
         format!(
-            "{} chapter folder(s) · {} page(s)",
-            audit.chapters.len(),
-            audit.image_count
+            "{} chapter archive(s) · {} page(s)",
+            package.chapters.len(),
+            package.image_count
         )
     } else {
         format!(
-            "{} chapter folder(s), {} expected · {} empty · {} page(s)",
-            audit.chapters.len(),
+            "{} chapter archive(s), {} expected · {} empty · {} page(s)",
+            package.chapters.len(),
             expected
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "?".to_string()),
             empty,
-            audit.image_count
+            package.image_count
         )
     };
     log_system(app, job_id, format!("Manga audit · {detail}"));
@@ -2619,17 +2704,17 @@ async fn process_manga_download(
     let verification = ExportVerification {
         ok,
         chapters_expected: expected,
-        chapters_found: audit.chapters.len() as u32,
+        chapters_found: package.chapters.len() as u32,
         empty_chapters: Vec::new(),
         missing_chapters: Vec::new(),
-        has_cover: audit.cover_bytes.is_some(),
+        has_cover: package.cover_bytes.is_some(),
         detail: detail.clone(),
     };
     set_phase(state, app, job_id, TaskPhase::Exporting);
     let export_started = Instant::now();
-    if let Err(error) = export::export_cbz(
-        primary_path,
+    if let Err(error) = export::export_manga_archives(
         destination,
+        &package,
         &metadata,
         options.chapters.as_deref(),
         &verification,
@@ -2645,85 +2730,65 @@ async fn process_manga_download(
             app,
             job_id,
             format!(
-                "Structured manga export · {} · image folders · metadata.json",
-                file_name(primary_path)
+                "Structured manga export · {} chapter archive(s) · metadata.json",
+                package.chapters.len()
             ),
         );
     }
     JobTimings::add(&mut timings.export, export_started.elapsed());
 
-    // The archive is the deliverable. If it is not on disk after the export
-    // (a policy/antivirus deletion, a sync tool, or a half-copied folder) the
-    // download would ship as loose images and read as "not a CBZ". Rebuild it
-    // from the page tree and say so, instead of reporting success for a folder
-    // of JPEGs.
-    let archive = if primary_path.is_file() {
-        primary_path.to_path_buf()
-    } else {
-        log_stderr(
-            app,
-            job_id,
-            format!(
-                "{} is missing after export · rebuilding it from the chapter pages",
-                file_name(primary_path)
-            ),
-        );
-        let format = primary_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("cbz");
-        let stem = primary_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or(title);
-        match export::repack_manga_chapters(destination, format, stem) {
-            Ok(path) => {
-                log_system(
-                    app,
-                    job_id,
-                    format!("Rebuilt comic archive · {}", path.display()),
-                );
-                path
+    // The archives are the deliverable. Verify each one after the write so a
+    // deleted or truncated chapter is named instead of being counted from the
+    // manifest alone.
+    set_phase(state, app, job_id, TaskPhase::Verifying);
+    let verify_started = Instant::now();
+    let mut verified = 0usize;
+    let mut total_bytes = 0u64;
+    for chapter in &package.chapters {
+        if !chapter.path.is_file() {
+            let reason = format!(
+                "Chapter archive is missing after export: {}",
+                chapter.path.display()
+            );
+            log_stderr(app, job_id, reason.clone());
+            if incomplete.is_none() {
+                *incomplete = Some(reason);
             }
-            Err(error) => {
-                *export_failed = Some(format!(
-                    "The packed archive is missing and could not be rebuilt: {error}"
-                ));
-                log_stderr(
-                    app,
-                    job_id,
-                    format!("Comic archive rebuild failed: {error}"),
-                );
-                return;
-            }
+            continue;
         }
-    };
+        total_bytes += std::fs::metadata(&chapter.path)
+            .map(|value| value.len())
+            .unwrap_or_default();
+        let mut report = verify::verify_any(&chapter.path, false);
+        report.chapters_expected = Some(1);
+        report.chapters_found = 1;
+        report.empty_chapters = if chapter.pages == 0 {
+            vec![chapter.position]
+        } else {
+            Vec::new()
+        };
+        report.has_cover = chapter.pages > 0;
+        report.ok = report.ok && chapter.pages > 0;
+        report.detail = format!("{} · {} page(s)", report.detail, chapter.pages);
+        if report.ok {
+            verified += 1;
+        }
+        outputs.push(output_file(&chapter.path, Some(report)));
+    }
+    JobTimings::add(&mut timings.verify, verify_started.elapsed());
     log_system(
         app,
         job_id,
         format!(
-            "Comic archive · {} · {}",
-            archive.display(),
-            crate::storage::human_bytes(
-                std::fs::metadata(&archive)
-                    .map(|value| value.len())
-                    .unwrap_or_default()
-            )
+            "Comic archives · {} of {} verified · {} · {}",
+            verified,
+            package.chapters.len(),
+            crate::storage::human_bytes(total_bytes),
+            destination.join("chapters").display()
         ),
     );
 
-    set_phase(state, app, job_id, TaskPhase::Verifying);
-    let verify_started = Instant::now();
-    let mut report = verify::verify_any(&archive, false);
-    report.chapters_expected = expected;
-    report.chapters_found = audit.chapters.len() as u32;
-    report.has_cover = audit.cover_bytes.is_some();
-    report.ok = report.ok && ok;
-    report.detail = format!("{} · {}", report.detail, detail);
-    outputs.push(output_file(&archive, Some(report)));
-    JobTimings::add(&mut timings.verify, verify_started.elapsed());
-
-    if !ok {
+    if !ok && incomplete.is_none() {
         *incomplete = Some(format!("Incomplete manga output — {detail}"));
     }
 }
@@ -2833,7 +2898,9 @@ async fn run_lncrawl_retry(
         .env("FORCE_COLOR", "0")
         .env("TERM", "dumb")
         .env("COLUMNS", "240")
-        .env("PYTHONUNBUFFERED", "1");
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
     if let Some(directory) = work_dir {
         lncrawl_data_env(&mut command, directory);
     }
@@ -3016,6 +3083,10 @@ struct ErrorTail {
     external_chapters: BTreeSet<String>,
     external_url: Option<String>,
     external_hosts: BTreeSet<String>,
+    /// aget prints its per-source reasons on stdout and exits 1. Keep every
+    /// line for Books instead of the lncrawl-shaped "actionable line" filter,
+    /// otherwise the job only ever shows the generic exit code.
+    keep_all_stdout: bool,
 }
 
 /// Enough to cover a traceback plus the engine's final `Exhausted:` block.
@@ -3055,6 +3126,49 @@ fn stdout_carries_reason(line: &str) -> bool {
         || lower.contains("connectionerror")
         || lower.contains("timeouterror")
         || lower.contains("sslerror")
+}
+
+/// One per-source outcome line from `scripts/aget.py`, for example
+/// `LibGen: 11 epub row(s)`, `libgen: no download in 5.2s` or
+/// `Project Gutenberg: search failed (HTTPError) after 1.1s — skipped`.
+fn is_aget_source_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("downloaded:") || lower.starts_with("no download completed") {
+        return true;
+    }
+    let Some((head, tail)) = trimmed.split_once(':') else {
+        return false;
+    };
+    if head.trim().is_empty() || head.len() > 40 || head.contains('/') {
+        return false;
+    }
+    let tail = tail.trim_start().to_ascii_lowercase();
+    // `skip_note` always ends its line with `— skipped`, whatever the reason
+    // was, so that is the most reliable marker for a per-source outcome.
+    if tail.ends_with("— skipped") || tail.ends_with("- skipped") {
+        return true;
+    }
+    [
+        "success",
+        "no download",
+        "no mirror",
+        "no result",
+        "no epub",
+        "no direct",
+        "no signed",
+        "nothing",
+        "failed",
+        "blocked",
+        "skipped",
+        "error",
+        "timed out",
+    ]
+    .iter()
+    .any(|marker| tail.starts_with(marker))
 }
 
 fn mangadex_external_line(line: &str) -> Option<(String, String, String)> {
@@ -3099,13 +3213,48 @@ impl ErrorTail {
     /// and then exits 0. Keep only the lines that carry a reason, so a normal
     /// progress stream cannot displace the final exception line.
     fn push_stdout(&mut self, line: &str) {
-        if !stdout_carries_reason(line) {
+        if !self.keep_all_stdout && !stdout_carries_reason(line) {
             return;
         }
         if self.lines.len() == ERROR_TAIL_LINES {
             self.lines.pop_front();
         }
         self.lines.push_back(line.to_string());
+    }
+
+    /// The clearest explanation the engine printed. aget reports one line per
+    /// source (`libgen: no download in 5.2s`, `Project Gutenberg: search
+    /// failed … — skipped`), which is more useful than the final exit code.
+    fn failure_detail(&self) -> Option<String> {
+        if self.keep_all_stdout
+            && let Some(source_lines) = self.source_report()
+        {
+            return Some(source_lines);
+        }
+        self.summary()
+    }
+
+    fn source_report(&self) -> Option<String> {
+        let mut picked = self
+            .lines
+            .iter()
+            .filter(|line| is_aget_source_line(line))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        picked.dedup();
+        if picked.is_empty() {
+            return None;
+        }
+        let start = picked.len().saturating_sub(5);
+        let collapsed = picked[start..]
+            .join(" · ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if collapsed.is_empty() {
+            return None;
+        }
+        Some(collapsed.chars().take(300).collect())
     }
 
     /// A user-facing explanation for MangaDex's licensing gap, when gallery-dl
@@ -3376,15 +3525,10 @@ async fn pump_lines<R>(
             }
         }
 
-        let _ = app.emit(
-            EVENT_LOG,
-            LogEvent {
-                job_id: job_id.clone(),
-                stream,
-                line: clean,
-                ts: now_ms(),
-            },
-        );
+        // Persist engine streams through the same path as system lines: aget
+        // explains a failure only on stdout, and "Copy diagnostics" must
+        // include that explanation instead of only the app's own messages.
+        emit_log(&app, &job_id, stream, clean);
     }
 }
 
@@ -5699,6 +5843,56 @@ mod artifact_tests {
 
         assert_eq!(tail.summary().as_deref(), Some("no artifact was produced"));
         assert!(ErrorTail::default().summary().is_none());
+    }
+
+    #[test]
+    fn book_failure_names_the_aget_sources() {
+        let mut tail = ErrorTail {
+            keep_all_stdout: true,
+            ..Default::default()
+        };
+        tail.push("[15:23:25] INFO     Searching for Fourth Wing");
+        tail.push("LibGen: no mirror answered (timeout; timeout) after 15.0s — skipped");
+        tail.push("WeLib: blocked (HTTPError) after 15.0s — skipped");
+        tail.push("Project Gutenberg: search failed (HTTPError) after 1.1s — skipped");
+        tail.push("No download completed (libgen, welib, gutenberg).");
+
+        let detail = tail.failure_detail().expect("detail");
+        assert!(detail.contains("LibGen"), "{detail}");
+        assert!(detail.contains("WeLib"), "{detail}");
+        assert!(detail.contains("Project Gutenberg"), "{detail}");
+        // Search chatter is not part of the explanation.
+        assert!(!detail.contains("Searching for"), "{detail}");
+
+        let message = book_failure_message(Some(&detail));
+        assert!(message.starts_with("Book not found"), "{message}");
+        assert!(message.contains("Check the ISBN"), "{message}");
+        assert!(message.contains("aget: "), "{message}");
+        assert!(message.contains("no mirror answered"), "{message}");
+
+        // Without a source line the generic sentence still explains the contract.
+        let generic = book_failure_message(None);
+        assert!(generic.contains("Check the ISBN"), "{generic}");
+        assert!(!generic.contains("aget:"), "{generic}");
+    }
+
+    #[test]
+    fn aget_source_lines_ignore_search_chatter() {
+        assert!(is_aget_source_line(
+            "LibGen: no mirror answered (timeout) after 15.0s — skipped"
+        ));
+        assert!(is_aget_source_line(
+            "WeLib: blocked (HTTPError) after 2.0s — skipped"
+        ));
+        assert!(is_aget_source_line(
+            "Project Gutenberg: search failed (HTTPError) after 1.1s — skipped"
+        ));
+        assert!(is_aget_source_line("No download completed (libgen)."));
+        assert!(!is_aget_source_line("LibGen: searching…"));
+        assert!(!is_aget_source_line("LibGen: 11 epub row(s)"));
+        assert!(!is_aget_source_line(
+            "[15:23:25] INFO     Sources are up to date"
+        ));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # NovelForge — Release Readiness
 
-**Last updated:** 2026-11-17  
-**Applies to:** `0.1.0` binary-only release  
-**Companion:** `docs/SOURCE_PIPELINE_BACKLOG.md` (NF-045 … NF-061), `docs/QA_MATRIX.md`
+**Last updated:** 2026-11-19  
+**Applies to:** `0.1.4` binary-only release  
+**Companion:** `docs/SOURCE_PIPELINE_BACKLOG.md` (NF-045 … NF-069), `docs/QA_MATRIX.md`
 
 ---
 
@@ -47,8 +47,10 @@ a port task (§5).
 | NF-063 lncrawl database inside the work dir | **DONE** | `spawn::native_path` strips the verbatim `\\?\` prefix at the process boundary; `lncrawl_data_env` pins `LNCRAWL_DATA_PATH` + `DATABASE_URL`; test `lncrawl_env_pins_the_database_to_the_work_dir` |
 | NF-064 diagnostics copy fallback | **DONE** | `src/lib/clipboard.ts` (Clipboard API → `execCommand`); About shows the report in a selectable textarea when both are blocked; 3 vitest cases |
 | NF-065 Windows pause/resume | **DONE** | `spawn::suspend_process_tree` / `resume_process_tree` snapshot the live tree (`CreateToolhelp32Snapshot`), suspend parents before children and call `NtSuspendProcess` / `NtResumeProcess` per member; a root failure rolls the tree back. `process::pause_process` / `resume_process` use it. Windows tests: `pause_stops_the_whole_tree_and_resume_releases_it` (launcher + worker prove a whole-tree stop), `pause_refuses_a_process_that_is_already_gone` |
-| NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds the packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ** button; `process_manga_download` logs `Comic archive · <absolute path> · <size>` and `export::repack_manga_chapters` rebuilds a missing archive from `chapters/` instead of leaving a folder of images, and the new `repack_manga` command + **Make CBZ** button repair a folder that already lost it (test `repack_builds_a_comic_archive_and_refuses_a_novel`) |
+| NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds a packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ**/**Open CBZs** button; `process_manga_download` logs the archives and `export::repack_manga_chapters` repairs an older folder instead of leaving a pile of images. The series-wide shape is corrected by NF-068 |
 | NF-067 TOC walk visibility + one walk per book | **DONE** | `metadata::fetch_chapter_index_reporting` reports `(page, pages)`; `novel://index-progress` drives `TOC page N / M`; `index_walk_lock` serialises walks per cache key so a waiter returns the finished cache instead of re-walking; Start is disabled while the first index loads. The 700 ms/request floor is unchanged (~50 s for a 2,700-chapter book) |
+| NF-068 one CBZ per manga chapter | **DONE** | `export::package_manga_directory` writes `chapters/<NNNN - label>.cbz` and returns a `MangaPackage`; `process_manga_download` audits/verifies every archive and logs `Comic archives · N of M verified · <size> · <path>`; `export::repack_manga_chapters` converts expanded folders and a legacy series CBZ in place, removing the replaced copy only after a page-count read-back matches; `LibraryNovel.archiveCount` drives the card label. Tests `packages_gallery_dl_tree_into_one_cbz_per_chapter`, `rebuilds_chapter_archives_from_the_page_tree`, `splits_a_legacy_series_archive_into_chapter_archives`, `library_counts_only_per_chapter_archives` |
+| NF-069 book failures name the sources | **DONE** | `ErrorTail.keep_all_stdout` retains aget's per-source stdout, `book_failure_message` appends it to the job row, engine streams are written through `emit_log`, and `probe_aget` runs `--help` (20 s) so a broken engine is named in Settings; both Python children force `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`. Tests `book_failure_names_the_aget_sources`, `aget_source_lines_ignore_search_chatter` |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
 | NF-058 Android | **OPEN (spike)** | §5; not a port |
 | NF-059 binary-only packaging / signing / GPL | **OPEN** | §6 |
@@ -56,9 +58,9 @@ a port task (§5).
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
 | NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
 
-Gate after the batch: **211 Rust lib tests + 2 integration + 39 frontend + 38
-Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production build
-green, and the personal-data/fixture scan clean.
+Gate after the 0.1.4 batch: **215 Rust lib tests + 2 integration + 39 frontend +
+38 Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production
+build green, and the personal-data/fixture scan clean.
 
 ---
 
@@ -221,14 +223,22 @@ Wine run as Windows validation.
       stop moving for as long as it stays paused, and Resume continues from the
       same chapter. The log shows `Process paused` / `Process resumed`; a failed
       pause reports why and leaves the status `running`.
-- [ ] A manga download leaves `<Title>.cbz` beside the image folders, and the
-      Library card's **Open CBZ** opens it in the default reader. The log shows
-      `Comic archive · <absolute path> · <size>`. If the archive is missing,
-      the log shows `… is missing after export · rebuilding …`.
-- [ ] An existing comic folder with no archive shows **Make CBZ** instead of
-      **Open CBZ**; pressing it writes `<Title>.cbz`, reports the path, and the
-      card switches to **Open CBZ**. A novel folder is refused with the EPUB
+- [ ] A manga download leaves one CBZ **per chapter** under `chapters/`, e.g.
+      `chapters/0001 - Chapter 1.cbz` … and **no** expanded image folder holding
+      the same pages. The Library card's **Open CBZs** opens that folder; the log
+      shows `Packed N chapter archive(s) · P page(s) · <time> · <path>` and
+      `Comic archives · N of N verified · <size> · <path>`. A single-archive
+      folder still shows **Open CBZ** and opens the file.
+- [ ] An existing comic folder from 0.1.2/0.1.3 (expanded page folders or one
+      `<Title>.cbz`) shows **Make CBZ**; pressing it writes one CBZ per chapter,
+      removes the replaced copy only after the page counts match, and the card
+      switches to **Open CBZs**. A novel folder is refused with the EPUB
       explanation.
+- [ ] A book download produces a verified EPUB; when every source fails, the job
+      row names the sources (`aget: LibGen … · WeLib …`) instead of only
+      `Book not found`, and the same lines are in `novelforge.log` and
+      **Copy diagnostics**. A broken `aget` is reported in Settings by the
+      `--help` probe, not silently treated as found.
 - [ ] The chapter list shows `TOC page N / M` while it loads and does not
       restart when Start download is pressed; the first load takes roughly
       `pages × 0.75 s` (about a minute for a 3,000-chapter book).

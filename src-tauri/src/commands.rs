@@ -738,10 +738,9 @@ pub fn open_file(state: State<'_, AppState>, path: String) -> AppResult<()> {
     open_in_file_manager(&target)
 }
 
-/// Rebuilds the packed CBZ for a comic folder that only carries the expanded
-/// `chapters/` tree. Older builds surfaced the image folders, so an existing
-/// library can hold comics with no archive; repacking repairs them in place
-/// instead of asking for another crawl.
+/// Repairs a comic folder so every chapter is its own CBZ. Older builds
+/// surfaced one series-wide archive or an expanded `chapters/` image tree;
+/// repacking converts both in place instead of asking for another crawl.
 #[tauri::command]
 pub fn repack_manga(state: State<'_, AppState>, folder: String) -> AppResult<String> {
     let settings = current_settings(&state);
@@ -774,8 +773,14 @@ fn repack_structured_comic(root: &Path, folder: &str, format: &str) -> AppResult
     } else {
         metadata.title.clone()
     };
-    let path = export::repack_manga_chapters(&target, format, &title).map_err(AppError::msg)?;
-    Ok(path.to_string_lossy().to_string())
+    let repaired = export::repack_manga_chapters(&target, format, &title).map_err(AppError::msg)?;
+    let chapters_dir = target.join("chapters");
+    Ok(format!(
+        "{} chapter archive(s) · {} duplicate(s) removed · {}",
+        repaired.archives.len(),
+        repaired.removed,
+        chapters_dir.display()
+    ))
 }
 
 #[tauri::command]
@@ -1122,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn repack_builds_a_comic_archive_and_refuses_a_novel() {
+    fn repack_builds_per_chapter_archives_and_refuses_a_novel() {
         let root = std::env::temp_dir().join(format!(
             "novelforge-repack-{}-{}",
             std::process::id(),
@@ -1138,10 +1143,23 @@ mod tests {
         )
         .unwrap();
 
-        let archive = repack_structured_comic(&root, comic.to_str().unwrap(), "cbz")
-            .expect("rebuild the comic archive");
-        assert!(archive.ends_with("My Comic.cbz"), "{archive}");
-        assert!(Path::new(&archive).is_file());
+        let summary = repack_structured_comic(&root, comic.to_str().unwrap(), "cbz")
+            .expect("rebuild the comic archives");
+        assert!(summary.contains("1 chapter archive(s)"), "{summary}");
+        assert!(
+            summary.contains("chapters"),
+            "summary does not name the chapter folder: {summary}"
+        );
+        let archive = comic.join("chapters/0001 - Chapter 1.cbz");
+        assert!(archive.is_file(), "missing {}", archive.display());
+        assert!(
+            !comic.join("chapters/0001 - Chapter 1").exists(),
+            "expanded image folder was kept beside the archive"
+        );
+        assert!(
+            !comic.join("My Comic.cbz").exists(),
+            "series archive written"
+        );
 
         // A novel folder already ships an EPUB; its `chapters/` holds XHTML, so
         // repacking it would produce an archive of prose, not pages.

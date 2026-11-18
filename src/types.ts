@@ -408,6 +408,8 @@ export interface LibraryNovel {
   epubPath: string | null;
   /** Packed CBZ/ZIP for a manga folder; `null` when the folder has none. */
   archivePath: string | null;
+  /** Per-chapter archives under `chapters/`; `0` for a legacy single archive. */
+  archiveCount: number;
   retryable: boolean;
   provenance: string | null;
   diskBytes: number;

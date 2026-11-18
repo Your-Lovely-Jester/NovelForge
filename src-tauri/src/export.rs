@@ -11,8 +11,9 @@
 //! ```
 //!
 //! The bundled EPUB stays for external readers. The split XHTML files and
-//! `metadata.json` power the fast in-app reader. Manga archives are split into
-//! image folders the same way.
+//! `metadata.json` power the fast in-app reader. Manga is delivered as one
+//! CBZ/ZIP per chapter under `chapters/`, so a 40-chapter series opens as 40
+//! books in a comic reader instead of one 2 GB archive.
 //!
 //! `metadata.json` is the canonical machine record. `index.json` mirrors the
 //! chapter list in a compact form and `chapters.html` is a self-contained,
@@ -1434,9 +1435,37 @@ fn image_extension(bytes: &[u8]) -> Option<&'static str> {
 // Manga / CBZ
 // ---------------------------------------------------------------------------
 
-/// Packs the image tree that gallery-dl downloads into one CBZ/ZIP with one
-/// folder per chapter. gallery-dl owns extraction; NovelForge owns the
-/// container shape that `audit_cbz` and `export_cbz` already understand.
+/// One per-chapter archive produced from a gallery-dl tree.
+#[derive(Debug, Clone)]
+pub struct MangaChapterArchive {
+    /// Absolute path inside `<destination>/chapters`.
+    pub path: PathBuf,
+    /// 1-based position in reading order.
+    pub position: u32,
+    /// Chapter label without the `0001 - ` ordering prefix.
+    pub title: String,
+    /// Number of image entries the archive carries.
+    pub pages: usize,
+}
+
+/// The chapter archives that make up one manga download.
+#[derive(Debug, Clone, Default)]
+pub struct MangaPackage {
+    pub chapters: Vec<MangaChapterArchive>,
+    pub image_count: usize,
+    /// Chapters whose archive carried no images.
+    pub empty_chapters: usize,
+    /// First page of the first chapter, used for the library cover.
+    pub cover_bytes: Option<Vec<u8>>,
+}
+
+/// Packs the image tree that gallery-dl downloads into **one CBZ/ZIP per
+/// chapter** under `<destination>/chapters/`.
+///
+/// The archive is the deliverable: no expanded image folder is written beside
+/// it. A legacy folder left by an older build (`chapters/0001 - …/`) is removed
+/// only when its page count equals the archive that replaces it, so nothing is
+/// deleted on an unverified guess.
 ///
 /// `source_root` is normally `<work dir>/gallery-dl`. Images directly under it
 /// become “Chapter 1”; nested folders keep their name and natural order.
@@ -1444,8 +1473,7 @@ pub fn package_manga_directory(
     source_root: &Path,
     destination: &Path,
     format: &str,
-    title: &str,
-) -> Result<PathBuf, String> {
+) -> Result<MangaPackage, String> {
     if !source_root.is_dir() {
         return Err(format!(
             "gallery-dl left no download tree at {}",
@@ -1492,7 +1520,7 @@ pub fn package_manga_directory(
 
     // A chapter is often uploaded by several scan groups. gallery-dl extracts
     // every version that passes `--child-filter`; keep the richest one per
-    // (language, volume, chapter) so the selection still means one folder per
+    // (language, volume, chapter) so the selection still means one archive per
     // chapter.
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut chosen: Vec<String> = Vec::new();
@@ -1515,29 +1543,13 @@ pub fn package_manga_directory(
     }
     chosen.sort_by_key(|left| natural_key(left));
 
-    let extension = if format.eq_ignore_ascii_case("zip") {
-        "zip"
-    } else {
-        "cbz"
-    };
-    let stem = sanitize_filename(title, 80);
-    let stem = if stem.is_empty() {
-        "manga".to_string()
-    } else {
-        stem
-    };
-    let archive_path = destination.join(format!("{stem}.{extension}"));
-    let file = File::create(&archive_path)
-        .map_err(|error| format!("Cannot create {}: {error}", archive_path.display()))?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = if extension == "zip" {
-        zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-    } else {
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
-    };
+    let extension = manga_archive_extension(format);
+    let chapters_dir = destination.join("chapters");
+    std::fs::create_dir_all(&chapters_dir)
+        .map_err(|error| format!("Cannot create chapters folder: {error}"))?;
 
-    let mut used_folders = HashSet::new();
+    let mut package = MangaPackage::default();
+    let mut used_labels = HashSet::new();
     for (index, key) in chosen.iter().enumerate() {
         let mut images = groups.remove(key).unwrap_or_default();
         images.sort_by(|left, right| {
@@ -1545,9 +1557,6 @@ pub fn package_manga_directory(
                 &right.file_name().unwrap_or_default().to_string_lossy(),
             ))
         });
-        if images.is_empty() {
-            continue;
-        }
 
         let label = key
             .rsplit('/')
@@ -1560,36 +1569,150 @@ pub fn package_manga_directory(
         }
         let mut unique = folder.clone();
         let mut suffix = 2;
-        while !used_folders.insert(unique.clone()) {
+        while !used_labels.insert(unique.clone()) {
             unique = format!("{folder} ({suffix})");
             suffix += 1;
         }
-        let folder_name = format!("{:04} - {unique}", index + 1);
+        let archive_name = format!("{:04} - {unique}", index + 1);
+        let archive_path = chapters_dir.join(format!("{archive_name}.{extension}"));
 
-        for (page, path) in images.iter().enumerate() {
+        let file = File::create(&archive_path)
+            .map_err(|error| format!("Cannot create {}: {error}", archive_path.display()))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = manga_zip_options(extension);
+        let mut written = 0usize;
+        for path in &images {
             let bytes = std::fs::read(path)
                 .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
             if bytes.is_empty() {
                 continue;
+            }
+            if package.cover_bytes.is_none() {
+                package.cover_bytes = Some(bytes.clone());
             }
             let page_extension = image_extension(&bytes).unwrap_or_else(|| {
                 path.extension()
                     .and_then(|value| value.to_str())
                     .unwrap_or("jpg")
             });
-            zip.start_file(
-                format!("{folder_name}/{:03}.{page_extension}", page + 1),
-                options,
-            )
-            .map_err(|error| format!("Cannot add manga page to archive: {error}"))?;
+            zip.start_file(format!("{:03}.{page_extension}", written + 1), options)
+                .map_err(|error| format!("Cannot add manga page to archive: {error}"))?;
             zip.write_all(&bytes)
                 .map_err(|error| format!("Cannot write manga page: {error}"))?;
+            written += 1;
         }
+        zip.finish()
+            .map_err(|error| format!("Cannot finish manga archive: {error}"))?;
+
+        // A 0.1.3 folder has the same chapter expanded into images. Replace it
+        // with the archive only when both carry the same page count.
+        remove_replaced_image_directory(&chapters_dir.join(&archive_name), written);
+
+        package.image_count += written;
+        if written == 0 {
+            package.empty_chapters += 1;
+        }
+        package.chapters.push(MangaChapterArchive {
+            path: archive_path,
+            position: (index + 1) as u32,
+            title: unique,
+            pages: written,
+        });
     }
 
-    zip.finish()
-        .map_err(|error| format!("Cannot finish manga archive: {error}"))?;
-    Ok(archive_path)
+    if package.chapters.is_empty() {
+        return Err("gallery-dl produced no images for this URL".to_string());
+    }
+    Ok(package)
+}
+
+fn manga_archive_extension(format: &str) -> &'static str {
+    if format.eq_ignore_ascii_case("zip") {
+        "zip"
+    } else {
+        "cbz"
+    }
+}
+
+fn manga_zip_options(extension: &str) -> zip::write::SimpleFileOptions {
+    if extension == "zip" {
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+    } else {
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
+    }
+}
+
+fn remove_replaced_image_directory(folder: &Path, expected_pages: usize) {
+    if expected_pages == 0 || !folder.is_dir() {
+        return;
+    }
+    let pages = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .filter(|entry| entry.file_name().to_str().is_some_and(is_image))
+                .count()
+        })
+        .unwrap_or(usize::MAX);
+    if pages == expected_pages {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+}
+
+/// Chapter archives already on disk, in natural reading order.
+pub fn chapter_archives(destination: &Path) -> Vec<PathBuf> {
+    let chapters_dir = destination.join("chapters");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&chapters_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .filter(|path| {
+                    path.extension()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|extension| {
+                            matches!(extension.to_ascii_lowercase().as_str(), "cbz" | "zip")
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    paths.sort_by_key(|path| natural_key(&path.file_name().unwrap_or_default().to_string_lossy()));
+    paths
+}
+
+/// Reads every chapter archive so the manifest, the audit and the files on
+/// disk cannot disagree.
+pub fn audit_chapter_archives(destination: &Path) -> Result<MangaPackage, String> {
+    let archives = chapter_archives(destination);
+    if archives.is_empty() {
+        return Err("No chapter archive was found in the chapters folder".to_string());
+    }
+    let mut package = MangaPackage::default();
+    for (index, path) in archives.iter().enumerate() {
+        let audit = audit_cbz(path)?;
+        if package.cover_bytes.is_none() {
+            package.cover_bytes = audit.cover_bytes.clone();
+        }
+        package.image_count += audit.image_count;
+        if audit.image_count == 0 {
+            package.empty_chapters += 1;
+        }
+        let stem = path
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("Chapter {}", index + 1));
+        package.chapters.push(MangaChapterArchive {
+            path: path.clone(),
+            position: (index + 1) as u32,
+            title: strip_archive_position(&stem).to_string(),
+            pages: audit.image_count,
+        });
+    }
+    Ok(package)
 }
 
 /// Reads the `info.json` that gallery-dl writes next to each chapter and
@@ -1675,46 +1798,14 @@ pub fn audit_cbz(path: &Path) -> Result<CbzAudit, String> {
     })
 }
 
-pub fn export_cbz(
-    cbz_path: &Path,
+pub fn export_manga_archives(
     destination: &Path,
+    package: &MangaPackage,
     metadata: &NovelMetadata,
     selection: Option<&str>,
     verification: &ExportVerification,
 ) -> Result<ExportMetadata, String> {
-    let audit = audit_cbz(cbz_path)?;
-    let chapters_dir = destination.join("chapters");
-    std::fs::create_dir_all(&chapters_dir)
-        .map_err(|error| format!("Cannot create chapters folder: {error}"))?;
-
-    let mut chapters = Vec::new();
-    for chapter in &audit.chapters {
-        // `package_manga_directory` already prefixes archive folders with
-        // `0001 - `; keep that ordering in the archive but not in the
-        // chapter label written beside it.
-        let label = strip_archive_position(&chapter.title);
-        let folder_name = sanitize_filename(label, 80);
-        let folder_rel = format!("chapters/{:04} - {folder_name}", chapter.position);
-        let folder = destination.join(&folder_rel);
-        std::fs::create_dir_all(&folder)
-            .map_err(|error| format!("Cannot create manga chapter folder: {error}"))?;
-        for (index, (_, bytes)) in chapter.images.iter().enumerate() {
-            let extension = image_extension(bytes).unwrap_or("jpg");
-            let file = folder.join(format!("{:03}.{extension}", index + 1));
-            std::fs::write(&file, bytes)
-                .map_err(|error| format!("Cannot write manga page: {error}"))?;
-        }
-        chapters.push(NovelChapter {
-            number: chapter.position,
-            title: label.to_string(),
-            url: metadata.source_url.clone(),
-            volume: None,
-            downloaded: true,
-            file: Some(folder_rel),
-        });
-    }
-
-    let cover = audit
+    let cover = package
         .cover_bytes
         .as_deref()
         .and_then(|bytes| {
@@ -1725,17 +1816,29 @@ pub fn export_cbz(
         })
         .or_else(|| write_cover(destination, None, metadata.cover.as_deref()));
 
-    let archive_name = cbz_path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "manga.cbz".to_string());
+    let mut chapters = Vec::new();
+    for chapter in &package.chapters {
+        let relative = chapter
+            .path
+            .strip_prefix(destination)
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| chapter.path.to_string_lossy().replace('\\', "/"));
+        chapters.push(NovelChapter {
+            number: chapter.position,
+            title: chapter.title.clone(),
+            url: metadata.source_url.clone(),
+            volume: None,
+            downloaded: true,
+            file: Some(relative),
+        });
+    }
 
     let expected = selection
         .and_then(parse_selection_serials)
         .map(|values| values.len() as u32);
     let export = ExportMetadata {
         title: non_empty(&metadata.title)
-            .unwrap_or_else(|| fallback_title(cbz_path))
+            .unwrap_or_else(|| fallback_title(destination))
             .to_string(),
         author: metadata.author.clone(),
         authors: metadata.authors.clone(),
@@ -1748,9 +1851,9 @@ pub fn export_cbz(
         cover,
         epub: None,
         chapter_count: expected
-            .unwrap_or(audit.chapters.len() as u32)
-            .max(audit.chapters.len() as u32),
-        downloaded_chapters: audit.chapters.len() as u32,
+            .unwrap_or(chapters.len() as u32)
+            .max(chapters.len() as u32),
+        downloaded_chapters: chapters.len() as u32,
         selection: selection.map(str::to_string),
         index_complete: false,
         index_detail: None,
@@ -1763,7 +1866,6 @@ pub fn export_cbz(
     };
     write_metadata(destination, &export)?;
     write_index_files(destination, &export)?;
-    let _ = archive_name;
     Ok(export)
 }
 
@@ -2255,20 +2357,41 @@ pub fn parse_selection_serials(spec: &str) -> Option<Vec<u32>> {
     }
 }
 
-/// Read a structured folder for the Home shelf / Library page.
-/// Rebuilds the packed archive from the expanded chapter tree beside it.
+/// What a comic repair actually did.
+#[derive(Debug, Clone, Default)]
+pub struct MangaRepack {
+    /// Chapter archives present after the repair, in reading order.
+    pub archives: Vec<PathBuf>,
+    /// New archives written from expanded folders or a legacy series archive.
+    pub built: usize,
+    /// Files or folders removed after a verified page-count match.
+    pub removed: usize,
+}
+
+/// Repairs a comic folder in place so every chapter is its own archive.
 ///
-/// `export_cbz` writes both the archive and `chapters/<NNNN - label>/`. If the
-/// archive is gone afterwards — an over-eager antivirus, a sync tool, or a
-/// half-copied folder — the download would ship as loose images, which is not
-/// what the user asked for. The page tree holds the same bytes, so packing it
-/// again restores the deliverable without touching the source.
+/// Two shapes predate per-chapter archives: `chapters/<NNNN - label>/` image
+/// folders (0.1.3) and one series-wide `Title.cbz` at the top level (0.1.2).
+/// Both are converted, and the replaced copy is removed only after the new
+/// archive is read back with an equal page count.
 pub fn repack_manga_chapters(
     destination: &Path,
     format: &str,
     title: &str,
-) -> Result<PathBuf, String> {
+) -> Result<MangaRepack, String> {
     let chapters_dir = destination.join("chapters");
+    let mut result = MangaRepack::default();
+    if !chapters_dir.is_dir() {
+        if top_level_archive(destination, title).is_none() {
+            return Err("The chapter folder is empty, so no archive could be rebuilt".to_string());
+        }
+        std::fs::create_dir_all(&chapters_dir)
+            .map_err(|error| format!("Cannot create chapters folder: {error}"))?;
+    }
+
+    let extension = manga_archive_extension(format);
+
+    // 1. Expanded image folders from an older export.
     let mut folders: Vec<PathBuf> = std::fs::read_dir(&chapters_dir)
         .map_err(|error| format!("Cannot read {}: {error}", chapters_dir.display()))?
         .filter_map(Result::ok)
@@ -2277,80 +2400,177 @@ pub fn repack_manga_chapters(
         .collect();
     folders
         .sort_by_key(|path| natural_key(&path.file_name().unwrap_or_default().to_string_lossy()));
-    if folders.is_empty() {
-        return Err("The chapter folder is empty, so no archive could be rebuilt".to_string());
-    }
-
-    let extension = if format.eq_ignore_ascii_case("zip") {
-        "zip"
-    } else {
-        "cbz"
-    };
-    let stem = sanitize_filename(title, 80);
-    let stem = if stem.is_empty() {
-        "manga".to_string()
-    } else {
-        stem
-    };
-    let archive_path = destination.join(format!("{stem}.{extension}"));
-    let file = File::create(&archive_path)
-        .map_err(|error| format!("Cannot create {}: {error}", archive_path.display()))?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = if extension == "zip" {
-        zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-    } else {
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
-    };
-
     for folder in &folders {
         let name = folder
             .file_name()
             .map(|value| value.to_string_lossy().to_string())
             .unwrap_or_else(|| "Chapter".to_string());
-        let mut pages: Vec<PathBuf> = std::fs::read_dir(folder)
-            .map_err(|error| format!("Cannot read {}: {error}", folder.display()))?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(is_image)
-            })
-            .collect();
+        let archive_path = chapters_dir.join(format!("{name}.{extension}"));
+        if archive_path.is_file() {
+            continue;
+        }
+        let mut pages = folder_pages(folder)?;
         pages.sort_by_key(|path| {
             natural_key(&path.file_name().unwrap_or_default().to_string_lossy())
         });
         if pages.is_empty() {
             continue;
         }
-        for page in &pages {
-            let page_name = page
-                .file_name()
-                .map(|value| value.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let bytes = std::fs::read(page)
-                .map_err(|error| format!("Cannot read {}: {error}", page.display()))?;
-            zip.start_file(format!("{name}/{page_name}"), options)
-                .map_err(|error| format!("Cannot add manga page to archive: {error}"))?;
-            zip.write_all(&bytes)
-                .map_err(|error| format!("Cannot write manga page: {error}"))?;
+        let images = pages
+            .iter()
+            .map(|path| {
+                std::fs::read(path)
+                    .map_err(|error| format!("Cannot read {}: {error}", path.display()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected = images.len();
+        let written = write_chapter_archive(&archive_path, extension, images)?;
+        let readback = audit_cbz(&archive_path)?.image_count;
+        if written != expected || readback != expected {
+            return Err(format!(
+                "Refusing to delete {}: wrote {} of {} page(s); read back {}",
+                folder.display(),
+                written,
+                expected,
+                readback
+            ));
+        }
+        let _ = std::fs::remove_dir_all(folder);
+        result.built += 1;
+        result.removed += 1;
+    }
+
+    // 2. One series-wide archive from the very first manga export.
+    let mut archives = chapter_archives(destination);
+    if archives.is_empty()
+        && let Some(legacy) = top_level_archive(destination, title)
+    {
+        let audit = audit_cbz(&legacy)?;
+        if audit.chapters.is_empty() {
+            return Err(format!(
+                "{} carries no chapter images to split",
+                legacy.display()
+            ));
+        }
+        let legacy_extension = legacy
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or(extension)
+            .to_ascii_lowercase();
+        let mut written_total = 0usize;
+        for (index, chapter) in audit.chapters.iter().enumerate() {
+            let label = strip_archive_position(&chapter.title);
+            let name = format!("{:04} - {}", index + 1, sanitize_filename(label, 80));
+            let archive_path = chapters_dir.join(format!("{name}.{legacy_extension}"));
+            let images = chapter
+                .images
+                .iter()
+                .map(|(_, bytes)| bytes.clone())
+                .collect::<Vec<_>>();
+            let written = write_chapter_archive(&archive_path, &legacy_extension, images)?;
+            let readback = audit_cbz(&archive_path)?.image_count;
+            if written != chapter.images.len() || readback != written {
+                return Err(format!(
+                    "Refusing to split {}: chapter {} wrote {} of {} page(s); read back {}",
+                    legacy.display(),
+                    index + 1,
+                    written,
+                    chapter.images.len(),
+                    readback
+                ));
+            }
+            written_total += written;
+            result.built += 1;
+        }
+        if written_total != audit.image_count {
+            return Err(format!(
+                "Refusing to delete {}: the split produced {} of {} page(s)",
+                legacy.display(),
+                written_total,
+                audit.image_count
+            ));
+        }
+        std::fs::remove_file(&legacy)
+            .map_err(|error| format!("Cannot remove {}: {error}", legacy.display()))?;
+        result.removed += 1;
+        archives = chapter_archives(destination);
+    }
+
+    // 3. A legacy series archive beside a complete per-chapter set duplicates
+    //    every page. Remove it only when both totals agree.
+    if !archives.is_empty()
+        && let Some(legacy) = top_level_archive(destination, title)
+    {
+        let legacy_pages = audit_cbz(&legacy)
+            .map(|audit| audit.image_count)
+            .unwrap_or(0);
+        let chapter_pages = archives
+            .iter()
+            .map(|path| {
+                audit_cbz(path)
+                    .map(|audit| audit.image_count)
+                    .unwrap_or(usize::MAX)
+            })
+            .sum::<usize>();
+        if legacy_pages > 0 && legacy_pages == chapter_pages {
+            std::fs::remove_file(&legacy)
+                .map_err(|error| format!("Cannot remove {}: {error}", legacy.display()))?;
+            result.removed += 1;
         }
     }
 
-    zip.finish()
-        .map_err(|error| format!("Cannot finish manga archive: {error}"))?;
-    Ok(archive_path)
+    archives = chapter_archives(destination);
+    if archives.is_empty() {
+        return Err("The chapter folder is empty, so no archive could be rebuilt".to_string());
+    }
+    result.archives = archives;
+    Ok(result)
 }
 
-/// The packed archive that lives directly inside a structured folder.
-///
-/// Novels use `metadata.epub`; manga has no EPUB, so the export records
-/// `epub: None` and the packed CBZ/ZIP is the only reader-ready file. Pick the
-/// archive named after the title when there are several, otherwise the largest
-/// one (packed archives are orders of magnitude bigger than a stray download).
-fn library_archive(folder: &Path, metadata: &ExportMetadata) -> Option<PathBuf> {
+fn folder_pages(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(std::fs::read_dir(folder)
+        .map_err(|error| format!("Cannot read {}: {error}", folder.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(is_image)
+        })
+        .collect())
+}
+
+fn write_chapter_archive(
+    archive_path: &Path,
+    extension: &str,
+    images: Vec<Vec<u8>>,
+) -> Result<usize, String> {
+    let file = File::create(archive_path)
+        .map_err(|error| format!("Cannot create {}: {error}", archive_path.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = manga_zip_options(extension);
+    let mut written = 0usize;
+    for bytes in images {
+        if bytes.is_empty() {
+            continue;
+        }
+        let page_extension = image_extension(&bytes).unwrap_or("jpg");
+        zip.start_file(format!("{:03}.{page_extension}", written + 1), options)
+            .map_err(|error| format!("Cannot add manga page to archive: {error}"))?;
+        zip.write_all(&bytes)
+            .map_err(|error| format!("Cannot write manga page: {error}"))?;
+        written += 1;
+    }
+    zip.finish()
+        .map_err(|error| format!("Cannot finish manga archive: {error}"))?;
+    Ok(written)
+}
+
+/// The series-wide archive an older export wrote beside `chapters/`. The
+/// title-named file wins, then the largest archive (a packed series is much
+/// bigger than an unrelated stray file).
+fn top_level_archive(folder: &Path, title: &str) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(folder)
         .ok()?
         .filter_map(Result::ok)
@@ -2367,7 +2587,7 @@ fn library_archive(folder: &Path, metadata: &ExportMetadata) -> Option<PathBuf> 
     if candidates.is_empty() {
         return None;
     }
-    let wanted = metadata.title.trim();
+    let wanted = sanitize_filename(title, 80);
     candidates.sort_by_key(|path| {
         let stem = path
             .file_stem()
@@ -2379,6 +2599,19 @@ fn library_archive(folder: &Path, metadata: &ExportMetadata) -> Option<PathBuf> 
         (stem != wanted, u64::MAX - size)
     });
     candidates.into_iter().next()
+}
+
+/// The archive the library card opens.
+///
+/// Per-chapter archives are the delivered shape, so the first chapter in
+/// reading order wins. A folder that only carries the older series-wide archive
+/// still opens that file, and **Chapters** reaches the folder holding either
+/// form.
+fn library_archive(folder: &Path, metadata: &ExportMetadata) -> Option<PathBuf> {
+    chapter_archives(folder)
+        .into_iter()
+        .next()
+        .or_else(|| top_level_archive(folder, &metadata.title))
 }
 
 pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
@@ -2406,9 +2639,11 @@ pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
         let path = folder.join(name);
         path.is_file().then(|| path.to_string_lossy().to_string())
     });
-    // Manga folders hold the packed CBZ/ZIP beside the expanded chapter tree.
-    // Surfacing it is what makes "download a comic" land as an archive: the
-    // folder alone reads as a pile of images.
+    // Manga folders hold one CBZ/ZIP per chapter inside `chapters/` (older
+    // builds kept a single series archive at the top level). `archiveCount`
+    // counts only the per-chapter archives, so a legacy series file still
+    // offers **Make CBZ** while **Open CBZ** opens the file it has today.
+    let archive_count = chapter_archives(folder).len() as u32;
     let archive_path =
         library_archive(folder, &metadata).map(|path| path.to_string_lossy().to_string());
     let source_host = metadata
@@ -2434,6 +2669,7 @@ pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
         modified,
         epub_path,
         archive_path,
+        archive_count,
         retryable,
         provenance: metadata.provenance,
         disk_bytes: crate::storage::directory_bytes(folder),
@@ -3464,13 +3700,25 @@ mod tests {
 
         let destination = root.join("out");
         std::fs::create_dir_all(&destination).unwrap();
-        let archive =
-            package_manga_directory(&root.join("gallery-dl"), &destination, "cbz", "Example")
-                .expect("package");
-        let audit = audit_cbz(&archive).expect("audit");
-        assert_eq!(audit.chapters.len(), 1);
-        assert_eq!(audit.chapters[0].title, "0001 - v01 c001 Longer");
-        assert_eq!(audit.chapters[0].images.len(), 4);
+        let package = package_manga_directory(&root.join("gallery-dl"), &destination, "cbz")
+            .expect("package");
+        assert_eq!(package.chapters.len(), 1);
+        assert_eq!(package.image_count, 4);
+        let chapter = &package.chapters[0];
+        assert_eq!(chapter.title, "v01 c001 Longer");
+        assert_eq!(chapter.pages, 4);
+        assert_eq!(
+            chapter
+                .path
+                .strip_prefix(&destination)
+                .unwrap()
+                .to_string_lossy(),
+            "chapters/0001 - v01 c001 Longer.cbz"
+        );
+        assert!(!destination.join("chapters/0001 - v01 c001 Longer").exists());
+
+        let audit = audit_cbz(&chapter.path).expect("audit");
+        assert_eq!(audit.image_count, 4);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3493,7 +3741,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuilds_a_missing_archive_from_the_page_tree() {
+    fn rebuilds_chapter_archives_from_the_page_tree() {
         let root = std::env::temp_dir().join(format!(
             "novelforge-manga-repack-{}-{}",
             std::process::id(),
@@ -3509,14 +3757,81 @@ mod tests {
             }
         }
 
-        let archive = repack_manga_chapters(&destination, "cbz", "Comic").expect("rebuild archive");
-        assert_eq!(archive.file_name().unwrap(), "Comic.cbz");
-        let audit = audit_cbz(&archive).expect("audit");
-        assert_eq!(audit.chapters.len(), 2);
+        let repaired =
+            repack_manga_chapters(&destination, "cbz", "Comic").expect("rebuild archives");
+        assert_eq!(repaired.archives.len(), 2);
+        assert_eq!(repaired.built, 2);
+        assert_eq!(repaired.removed, 2);
         // Natural order, not the read_dir order.
-        assert!(audit.chapters[0].title.ends_with("Chapter 1"));
-        assert_eq!(audit.chapters[0].images.len(), 3);
-        assert_eq!(audit.chapters[1].images.len(), 2);
+        assert_eq!(
+            repaired.archives[0]
+                .strip_prefix(&destination)
+                .unwrap()
+                .to_string_lossy(),
+            "chapters/0001 - Chapter 1.cbz"
+        );
+        assert_eq!(
+            repaired.archives[1]
+                .strip_prefix(&destination)
+                .unwrap()
+                .to_string_lossy(),
+            "chapters/0002 - Chapter 2.cbz"
+        );
+        // The expanded folders were replaced, not duplicated.
+        assert!(!destination.join("chapters/0001 - Chapter 1").exists());
+        assert!(!destination.join("chapters/0002 - Chapter 2").exists());
+        assert!(!destination.join("Comic.cbz").exists());
+
+        let first = audit_cbz(&repaired.archives[0]).expect("audit first");
+        assert_eq!(first.image_count, 3);
+        let second = audit_cbz(&repaired.archives[1]).expect("audit second");
+        assert_eq!(second.image_count, 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn splits_a_legacy_series_archive_into_chapter_archives() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-manga-split-{}-{}",
+            std::process::id(),
+            crate::settings::now_ms()
+        ));
+        let destination = root.join("comic-legacy");
+        std::fs::create_dir_all(&destination).unwrap();
+        let png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00];
+        // Write the single series archive the way 0.1.2 did: chapter folders
+        // inside one CBZ.
+        let mut series = std::fs::File::create(destination.join("Comic.cbz")).unwrap();
+        let mut zip = zip::ZipWriter::new(&mut series);
+        for (chapter, pages) in [("0001 - Chapter 1", 3), ("0002 - Chapter 2", 2)] {
+            for page in 1..=pages {
+                zip.start_file(
+                    format!("{chapter}/{page:03}.png"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zip.write_all(&png).unwrap();
+            }
+        }
+        zip.finish().unwrap();
+        std::fs::create_dir_all(destination.join("chapters")).unwrap();
+
+        let repaired =
+            repack_manga_chapters(&destination, "cbz", "Comic").expect("split the series archive");
+        assert_eq!(repaired.archives.len(), 2);
+        assert_eq!(repaired.built, 2);
+        assert_eq!(repaired.removed, 1);
+        assert!(
+            !destination.join("Comic.cbz").exists(),
+            "legacy archive kept"
+        );
+        let total: usize = repaired
+            .archives
+            .iter()
+            .map(|path| audit_cbz(path).expect("audit chapter").image_count)
+            .sum();
+        assert_eq!(total, 5);
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3547,10 +3862,65 @@ mod tests {
         let archive = library_archive(&folder, &metadata).expect("archive");
         assert_eq!(archive.file_name().unwrap(), "Example.cbz");
 
-        // No archive at all is not an error; the card simply has no CBZ action.
+        // No top-level archive: the first per-chapter archive is the target.
         std::fs::remove_file(folder.join("Example.cbz")).unwrap();
         std::fs::remove_file(folder.join("unrelated.zip")).unwrap();
+        std::fs::write(
+            folder.join("chapters/0001 - Chapter 1.cbz"),
+            b"packed chapter",
+        )
+        .unwrap();
+        let archive = library_archive(&folder, &metadata).expect("chapter archive");
+        assert_eq!(archive.file_name().unwrap(), "0001 - Chapter 1.cbz");
+
+        // No archive at all is not an error; the card simply has no CBZ action.
+        std::fs::remove_file(folder.join("chapters/0001 - Chapter 1.cbz")).unwrap();
         assert!(library_archive(&folder, &metadata).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn library_counts_only_per_chapter_archives() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-manga-count-{}-{}",
+            std::process::id(),
+            crate::settings::now_ms()
+        ));
+        let folder = root.join("example-0123abcd");
+        std::fs::create_dir_all(folder.join("chapters")).unwrap();
+        write_metadata(
+            &folder,
+            &ExportMetadata {
+                title: "Example".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A legacy series archive opens as one file but still needs conversion.
+        std::fs::write(folder.join("Example.cbz"), b"packed series").unwrap();
+        let novel = library_novel(&folder).expect("library entry");
+        assert_eq!(novel.archive_count, 0);
+        assert!(
+            novel
+                .archive_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("Example.cbz"))
+        );
+
+        // Per-chapter archives are the delivered shape; the first one is the
+        // card's target and the count drives **Open CBZs**.
+        std::fs::write(folder.join("chapters/0001 - Chapter 1.cbz"), b"one").unwrap();
+        std::fs::write(folder.join("chapters/0002 - Chapter 2.cbz"), b"two").unwrap();
+        let novel = library_novel(&folder).expect("library entry");
+        assert_eq!(novel.archive_count, 2);
+        assert!(
+            novel
+                .archive_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("chapters/0001 - Chapter 1.cbz"))
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3563,7 +3933,7 @@ mod tests {
     }
 
     #[test]
-    fn packages_gallery_dl_tree_into_one_cbz() {
+    fn packages_gallery_dl_tree_into_one_cbz_per_chapter() {
         let root = std::env::temp_dir().join(format!(
             "novelforge-manga-pack-{}-{}",
             std::process::id(),
@@ -3581,20 +3951,46 @@ mod tests {
 
         let destination = root.join("out");
         std::fs::create_dir_all(&destination).unwrap();
-        let archive =
-            package_manga_directory(&root.join("gallery-dl"), &destination, "cbz", "Example")
-                .expect("package");
-        assert!(archive.ends_with("Example.cbz"));
+        let package = package_manga_directory(&root.join("gallery-dl"), &destination, "cbz")
+            .expect("package");
+        assert_eq!(package.chapters.len(), 2);
+        assert_eq!(package.image_count, 4);
+        assert_eq!(package.empty_chapters, 0);
+        assert!(package.cover_bytes.is_some());
 
-        let audit = audit_cbz(&archive).expect("audit");
+        let names = package
+            .chapters
+            .iter()
+            .map(|chapter| {
+                chapter
+                    .path
+                    .strip_prefix(&destination)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "chapters/0001 - v01 c001.cbz".to_string(),
+                "chapters/0002 - v01 c002.cbz".to_string()
+            ]
+        );
+        // One archive per chapter, and no parallel image tree.
+        assert_eq!(chapter_archives(&destination).len(), 2);
+        assert!(!destination.join("chapters/0001 - v01 c001").exists());
+        assert!(!destination.join("Example.cbz").exists());
+
+        let audit = audit_chapter_archives(&destination).expect("audit");
         assert_eq!(audit.chapters.len(), 2);
         assert_eq!(audit.image_count, 4);
-        assert_eq!(audit.chapters[0].title, "0001 - v01 c001");
-        assert_eq!(audit.chapters[0].images[0].0, "0001 - v01 c001/001.png");
+        assert_eq!(audit.chapters[0].title, "v01 c001");
+        assert_eq!(audit.chapters[0].pages, 3);
 
         let empty = root.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
-        assert!(package_manga_directory(&empty, &destination, "cbz", "Empty").is_err());
+        assert!(package_manga_directory(&empty, &destination, "cbz").is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }

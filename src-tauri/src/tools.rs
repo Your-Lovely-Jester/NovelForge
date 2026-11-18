@@ -298,26 +298,83 @@ async fn probe_aget(settings: &Settings) -> ToolStatus {
     // not a version and should not be shown as one in Settings or diagnostics.
     let version = None;
     let chromium = playwright_chromium_installed();
+    let mut detail = vec![if chromium {
+        "Playwright Chromium ready".to_string()
+    } else {
+        "Chromium missing — Anna's Archive/Ocean will be skipped; LibGen and WeLib still work"
+            .to_string()
+    }];
+
+    // A shim on disk is not a working engine. Run the real entry point so a
+    // broken venv, missing dependency or unusable Python names itself here
+    // instead of surfacing as "0 files" in every book job.
+    let mut found = resolved.is_some();
+    if let Some(tool) = &resolved {
+        match aget_runs(tool).await {
+            Ok(()) => detail.push("runs (--help)".to_string()),
+            Err(error) => {
+                found = false;
+                detail.push(format!("cannot run: {error}"));
+            }
+        }
+    }
+    if let Some(problem) = configured_path_problem(settings.aget_path.as_deref(), "aget") {
+        detail.push(problem);
+    }
 
     ToolStatus {
         id: "aget".to_string(),
         label: "Book sources (aget)".to_string(),
         // Chromium is only needed for Anna's Archive/Ocean. LibGen and WeLib are
         // pure HTTP, so a missing browser must not mark the whole engine absent.
-        found: resolved.is_some(),
+        found,
         path: resolved.as_ref().map(|tool| tool.display.clone()),
         version,
-        detail: Some(join_detail(
-            if chromium {
-                "Playwright Chromium ready".to_string()
-            } else {
-                "Chromium missing — Anna's Archive/Ocean will be skipped; LibGen and WeLib still work"
-                    .to_string()
-            },
-            configured_path_problem(settings.aget_path.as_deref(), "aget"),
-        )),
+        detail: Some(detail.join(" · ")),
         hint: install_hint("books"),
     }
+}
+
+/// Run `aget --help` with the same environment the download uses. Returns the
+/// exit status and the first error line when the engine cannot start.
+async fn aget_runs(tool: &ResolvedTool) -> Result<(), String> {
+    let mut command = Command::new(crate::spawn::native_path(&tool.program));
+    command
+        .args(&tool.prefix)
+        .arg("--help")
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .kill_on_drop(true);
+    crate::spawn::hide_console(&mut command);
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "timed out after 20 s while running --help".to_string())?
+        .map_err(|error| format!("could not start: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let line = String::from_utf8_lossy(text)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("no output")
+        .chars()
+        .take(160)
+        .collect::<String>();
+    Err(format!(
+        "--help exited {} · {line}",
+        output
+            .status
+            .code()
+            .map_or_else(|| "signal".to_string(), |code| code.to_string())
+    ))
 }
 
 pub fn engine_for_tool_id(id: &str) -> Option<Engine> {
