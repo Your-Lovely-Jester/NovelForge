@@ -3909,7 +3909,13 @@ gutenberg or standardebooks",
             args.push("--source".to_string());
             args.push(source);
             args.push("--output".to_string());
-            args.push(destination.to_string_lossy().to_string());
+            // aget is Python: hand it the path without the verbatim prefix for
+            // the same reason lncrawl's SQLite URL needed one.
+            args.push(
+                spawn::native_path(destination)
+                    .to_string_lossy()
+                    .to_string(),
+            );
             args.push("--headless".to_string());
             if let Some(title) = request
                 .options
