@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import type { DownloadManager } from "@/hooks/useDownloadManager";
+import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/tauri";
 import { formatBytes } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -96,17 +97,28 @@ const ENGINEERING = [
 
 export function AboutPage({ manager }: { manager: DownloadManager }) {
   const info = manager.appInfo;
-  const [diagState, setDiagState] = useState<"idle" | "copied" | "error">("idle");
+  const [diagState, setDiagState] = useState<"idle" | "copied" | "error" | "manual">("idle");
+  // Kept only when the clipboard is unavailable: the report is shown so it can
+  // be selected and copied by hand instead of disappearing.
+  const [manualReport, setManualReport] = useState<string | null>(null);
 
   const copyDiagnostics = async () => {
+    let report: string;
     try {
-      const report = await api.getDiagnostics();
-      await navigator.clipboard.writeText(report);
-      setDiagState("copied");
+      report = await api.getDiagnostics();
     } catch {
       setDiagState("error");
+      window.setTimeout(() => setDiagState("idle"), 3200);
+      return;
     }
-    window.setTimeout(() => setDiagState("idle"), 3200);
+    if (await copyText(report)) {
+      setManualReport(null);
+      setDiagState("copied");
+      window.setTimeout(() => setDiagState("idle"), 3200);
+      return;
+    }
+    setManualReport(report);
+    setDiagState("manual");
   };
 
   return (
@@ -278,9 +290,26 @@ export function AboutPage({ manager }: { manager: DownloadManager }) {
               {diagState === "copied"
                 ? "Diagnostics copied"
                 : diagState === "error"
-                  ? "Could not copy diagnostics"
-                  : "Copy diagnostics"}
+                  ? "Could not read diagnostics"
+                  : diagState === "manual"
+                    ? "Clipboard blocked — copy below"
+                    : "Copy diagnostics"}
             </button>
+            {manualReport ? (
+              <div className="mt-2">
+                <p className="text-[10.5px] leading-relaxed text-gold-300">
+                  This WebView refused clipboard access. The report is below —
+                  click it and press Ctrl+C (⌘C) to copy.
+                </p>
+                <textarea
+                  readOnly
+                  value={manualReport}
+                  aria-label="Diagnostics report"
+                  onFocus={(event) => event.currentTarget.select()}
+                  className="mt-1 h-44 w-full resize-y border border-parchment-100/12 bg-black/40 p-2 font-mono text-[10.5px] leading-relaxed text-parchment-300 outline-none focus:border-vermilion-500/40"
+                />
+              </div>
+            ) : null}
             <p className="mt-1.5 text-[10.5px] leading-relaxed text-parchment-600">
               Versions, tool paths, settings and the last 200 log lines. Home
               paths are shortened; tokens and page text are never included.

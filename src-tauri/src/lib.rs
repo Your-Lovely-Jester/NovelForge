@@ -17,6 +17,7 @@ mod qa;
 mod resolver;
 mod settings;
 mod sources;
+mod spawn;
 mod storage;
 mod structurer;
 mod timeutil;

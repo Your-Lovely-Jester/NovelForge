@@ -43,6 +43,9 @@ a port task (§5).
 | NF-054 ZIP asset path hardening | **DONE** | `export::safe_entry_path` |
 | NF-055 schema version | **DONE** | `model::SCHEMA_VERSION` stamped on write |
 | NF-056 corrupt catalogue no longer aborts | **DONE** | `catalogue::entries` logs to stderr and returns empty |
+| NF-062 no console windows on Windows | **DONE** | `src-tauri/src/spawn.rs` (`CREATE_NO_WINDOW` for `tokio`/`std` commands); used by probes, searches, downloads, retry, curl and `taskkill` |
+| NF-063 lncrawl database inside the work dir | **DONE** | `spawn::native_path` strips the verbatim `\\?\` prefix at the process boundary; `lncrawl_data_env` pins `LNCRAWL_DATA_PATH` + `DATABASE_URL`; test `lncrawl_env_pins_the_database_to_the_work_dir` |
+| NF-064 diagnostics copy fallback | **DONE** | `src/lib/clipboard.ts` (Clipboard API → `execCommand`); About shows the report in a selectable textarea when both are blocked; 3 vitest cases |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
 | NF-058 Android | **OPEN (spike)** | §5; not a port |
 | NF-059 binary-only packaging / signing / GPL | **OPEN** | §6 |
@@ -191,12 +194,19 @@ Wine run as Windows validation.
       resolved config dir), not a Linux path.
 - [ ] About shows a `build <7-char sha>` matching the Actions run that produced
       the installer (not `dev`, not an older commit).
+- [ ] Opening the app shows **no** console window; tool probes stay silent.
+- [ ] A webnovel fetch shows no console window (each source search used to flash
+      one), and neither does a download.
 - [ ] Tool discovery finds native `lncrawl.cmd` / `gallery-dl.exe` / `aget`.
 - [ ] Each Settings path field's **Check** answers found/not found immediately;
       **Re-check** reports the searched `%LOCALAPPDATA%\novelforge\bin` when a
       tool is missing.
 - [ ] A short webnovel download (2 chapters) produces cover, `metadata.json`,
-      `chapters/`, `index.json`, `chapters.html` and one verified EPUB.
+      `chapters/`, `index.json`, `chapters.html` and one verified EPUB. The job
+      log shows `lncrawl database · sqlite:///…/sqlite.db` inside the job's
+      work directory, not a `//?/` path.
+- [ ] About → **Copy diagnostics** either copies or shows the report in a
+      selectable box; it never silently fails.
 - [ ] Cancel kills the Python grandchild (`tasklist` shows no orphan).
 - [ ] Closing the window during a crawl shows the quit modal.
 - [ ] **Stop and quit** marks the job interrupted; relaunch restores the row; Resume

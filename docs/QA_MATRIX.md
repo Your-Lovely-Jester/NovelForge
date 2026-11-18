@@ -20,14 +20,17 @@ That runs:
 | Rust offline integration | `cargo test --test offline_export` (inside `src-tauri`) | a real fixture EPUB through `audit_epub` + `export_epub`: cleaned chapters, cover, `metadata.json`, `index.json`, `chapters.html`, complete/incomplete flags |
 | Book source scoring (Python) | `python3 -m unittest discover -s scripts -t scripts` | `parse_libgen` over two real LibGen pages; title floor, omnibus, prefix/author, language and co-author guards; `choose_candidate`/`choose_candidates` order, limit and fail-closed behaviour; Anna's title-only renormalisation; Ocean heading cleanup; Gutenberg and Standard Ebooks search/book parsing, language mapping, `?source=download` interstitial bypass and HTML-payload rejection |
 | lncrawl/NovelFire patch (Python) | `python3 -m unittest discover -s scripts -t scripts` | `test_lncrawl_scraper_patch.py`: patcher idempotence, ambiguous-source rejection, and the saved `readnovel.site` loading stub with its escaped mirror destination |
-| Frontend component tests | `npm test` | Home shelf source filter labels, counts, filtering, vanished-source fallback; search partial-result/failure lists, zero hits, empty-query and direct-URL guards, cached-age label; Library incomplete-index warning, migrated entries and exact clicked-folder actions; persisted-task hydration; download size estimate, 300-chapter warning threshold and quota levels; resolver confidence helpers; Books series checklist, per-book selection/fetch, public-domain opt-in selection and source-failure rendering |
+| Frontend component tests | `npm test` | Home shelf source filter labels, counts, filtering, vanished-source fallback; search partial-result/failure lists, zero hits, empty-query and direct-URL guards, cached-age label; Library incomplete-index warning, migrated entries and exact clicked-folder actions; persisted-task hydration; download size estimate, 300-chapter warning threshold and quota levels; resolver confidence helpers; Books series checklist, per-book selection/fetch, public-domain opt-in selection and source-failure rendering; diagnostics copy via the Clipboard API, its `execCommand` fallback and total failure |
 | Frontend dead code + unused deps | `npm run knip` | unreferenced files, exports, types and dependencies; wired into `scripts/check.sh` and CI |
 | Frontend typecheck + bundle | `npm run build` | TypeScript and Vite production build |
 
 `.github/workflows/ci.yml` runs the same steps on Linux.
 `.github/workflows/windows-build.yml` runs fmt, clippy, the full Rust test
 suite and `tauri build --bundles nsis` on `windows-latest`, and uploads the
-installer + SHA-256 manifest; it is the packaging gate for NF-057.
+installer + SHA-256 manifest; it is the packaging gate for NF-057. Its
+`cargo test` step is also the only place the `#[cfg(windows)]` tests run, so
+`spawn::tests::native_path_*` (the `\\?\` strip that fixed the lncrawl SQLite
+failure) is proven there rather than on Linux.
 
 ### Audit tooling (NF-061)
 
@@ -106,6 +109,9 @@ in `SOURCE_PIPELINE_BACKLOG.md`.
 | NF-055 schema version | `journal_tests::the_journal_is_schema_stamped`; `metadata.json`, `index.json`, `settings.json` and `jobs.json` carry `schemaVersion` on write |
 | NF-056 corrupt bundled catalogue | `catalogue::entries` logs the parse error and returns an empty list instead of `panic!`; the app still opens and the source picker is empty |
 | NF-060 personal-data / fixture guard | `scripts/check-personal-data.sh` runs first in `check.sh`: product inputs must not contain `/home/<user>/` paths, `tauri.conf.json` must not declare `bundle.resources`, release code may only `include_bytes!`/`include_str!` from `resources/` before the first `#[cfg(test)]`, known fixture markers must be absent, and an existing release binary is grepped for fixture prose. Probe: adding `/home/<user>/probe/` to `src/__guard_probe.ts` failed the gate until removed |
+| NF-062 no console windows on Windows | `src-tauri/src/spawn.rs` wraps every child: `hide_console` (`tokio`) and `hide_console_std` (`std`) set `CREATE_NO_WINDOW`. Used by `tools::probe`, `CrawlSpawner::spawn_with`, `run_lncrawl_retry`, both `resolver` searches, both `transport` curl calls and the two `taskkill` helpers. Manual on Windows: no window at start-up, during a fetch, or during a download |
+| NF-063 lncrawl SQLite path | `process::stall_tests::lncrawl_env_pins_the_database_to_the_work_dir` asserts both env vars and the `sqlite:///…/sqlite.db` shape; `spawn::tests::native_path_*` (Windows CI) assert `\\?\C:\…` → `C:\…`, `\\?\UNC\server\share` → `\\server\share`, and that volume GUIDs/plain paths are untouched. Manual on Windows: the job log prints the database URL and 2 chapters download |
+| NF-064 diagnostics copy fallback | `src/lib/clipboard.test.ts` (3 tests): Clipboard API path, `execCommand` fallback after a rejected `writeText`, total failure with no leftover textarea. Manual: About shows the report in a textarea when the clipboard is blocked |
 
 ## 2. Live smoke (opt-in)
 

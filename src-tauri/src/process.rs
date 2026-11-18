@@ -6,6 +6,7 @@ use crate::model::*;
 use crate::paths;
 use crate::resolver;
 use crate::settings::{Settings, now_ms, now_secs, prepare_download_dir, slugify};
+use crate::spawn;
 use crate::storage;
 use crate::timeutil::civil_from_days;
 use crate::tools::resolve_tool;
@@ -619,6 +620,19 @@ pub async fn start_download(
                 directory.display()
             ),
         );
+        if request.engine == Engine::Webnovel {
+            // The exact database lncrawl must create. If it ever fails again,
+            // the log shows the URL instead of only sqlite's CANTOPEN error.
+            let directory = spawn::native_path(directory);
+            log_system(
+                &app,
+                &id,
+                format!(
+                    "lncrawl database · {}",
+                    sqlite_url(&directory.join("sqlite.db"))
+                ),
+            );
+        }
     }
 
     tokio::spawn(run_job(
@@ -877,11 +891,12 @@ fn terminate_process(pid: u32) {
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let mut command = std::process::Command::new("taskkill");
+        command
             .args(["/PID", &pid.to_string(), "/T"])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .stderr(std::process::Stdio::null());
+        let _ = spawn::hide_console_std(&mut command).status();
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -899,11 +914,12 @@ fn force_kill_process(pid: u32) {
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let mut command = std::process::Command::new("taskkill");
+        command
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .stderr(std::process::Stdio::null());
+        let _ = spawn::hide_console_std(&mut command).status();
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -978,6 +994,29 @@ fn resume_args(args: &[String]) -> Vec<String> {
     resumed
 }
 
+/// Point lncrawl at the private job directory.
+///
+/// `LNCRAWL_DATA_PATH` sets `APP_DIR`, which holds the config, the novel store
+/// and the SQLite database. v4.14 derives the database URL from `APP_DIR` as
+/// `Path.resolve().as_posix()`, and a canonicalised Windows root arrives as
+/// `\\?\C:\...`; the resulting `sqlite://///?/C:/...` URL made the very first
+/// chapter fail with "unable to open database file". Both variables are set
+/// here from the native (prefix-free) path so the database never depends on
+/// that conversion. The retry path uses the same helper so a resumed crawl
+/// lands in the same store.
+fn lncrawl_data_env(command: &mut Command, directory: &Path) {
+    let directory = spawn::native_path(directory);
+    let database = sqlite_url(&directory.join("sqlite.db"));
+    command
+        .env("LNCRAWL_DATA_PATH", &directory)
+        .env("DATABASE_URL", database);
+}
+
+/// `sqlite:///<absolute path>` in the forward-slash form SQLAlchemy expects.
+fn sqlite_url(path: &Path) -> String {
+    format!("sqlite:///{}", path.to_string_lossy().replace('\\', "/"))
+}
+
 /// Everything needed to launch the engine again. NF-035 retries a transient
 /// failure once; without this the first `Child` would be the only chance.
 struct CrawlSpawner {
@@ -1002,11 +1041,11 @@ impl CrawlSpawner {
     }
 
     fn spawn_with(&self, args: &[String]) -> std::io::Result<Child> {
-        let mut command = Command::new(&self.program);
+        let mut command = Command::new(spawn::native_path(&self.program));
         command
             .args(&self.prefix)
             .args(args)
-            .current_dir(&self.cwd)
+            .current_dir(spawn::native_path(&self.cwd))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1021,7 +1060,7 @@ impl CrawlSpawner {
         if self.engine == Engine::Webnovel
             && let Some(directory) = &self.work_dir
         {
-            command.env("LNCRAWL_DATA_PATH", directory);
+            lncrawl_data_env(&mut command, directory);
         }
         // aget's OceanOfPDF driver needs an explicit Chromium. The bundled
         // Playwright browser is the only one the toolchain guarantees.
@@ -1037,6 +1076,7 @@ impl CrawlSpawner {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
         }
+        spawn::hide_console(&mut command);
 
         command.spawn()
     }
@@ -2691,11 +2731,11 @@ async fn run_lncrawl_retry(
         None => args.push("--all".to_string()),
     }
 
-    let mut command = Command::new(&tool.program);
+    let mut command = Command::new(spawn::native_path(&tool.program));
     command
         .args(&tool.prefix)
         .args(&args)
-        .current_dir(destination)
+        .current_dir(spawn::native_path(destination))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2706,13 +2746,14 @@ async fn run_lncrawl_retry(
         .env("COLUMNS", "240")
         .env("PYTHONUNBUFFERED", "1");
     if let Some(directory) = work_dir {
-        command.env("LNCRAWL_DATA_PATH", directory);
+        lncrawl_data_env(&mut command, directory);
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.as_std_mut().process_group(0);
     }
+    spawn::hide_console(&mut command);
 
     log_system(app, job_id, format!("$ {}", tool.command_line(&args)));
     progress.reset_transfer();
@@ -5681,6 +5722,34 @@ mod stall_tests {
         assert_eq!(resumed.iter().filter(|arg| *arg == "--resume").count(), 1);
         assert_eq!(resumed.len(), args.len());
         assert_eq!(resumed[2], "https://example.com/book");
+    }
+
+    #[test]
+    fn lncrawl_env_pins_the_database_to_the_work_dir() {
+        let work = Path::new("/library/.novelforge-work/job-1");
+        let mut command = Command::new("lncrawl");
+        lncrawl_data_env(&mut command, work);
+        let env: HashMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(|value| value.to_owned())))
+            .collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("LNCRAWL_DATA_PATH"))
+                .and_then(|value| value.as_deref()),
+            Some(work.as_os_str())
+        );
+        // sqlite3 gets an absolute path, never one derived from a canonicalised
+        // `\\?\` root, which was the "unable to open database file" failure.
+        let url = env
+            .get(std::ffi::OsStr::new("DATABASE_URL"))
+            .cloned()
+            .flatten()
+            .expect("database url");
+        assert_eq!(
+            url.to_string_lossy(),
+            "sqlite:////library/.novelforge-work/job-1/sqlite.db"
+        );
     }
 
     #[tokio::test]

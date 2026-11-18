@@ -397,8 +397,9 @@ fn install_hint(component: &str) -> String {
 }
 
 async fn probe(program: &Path, prefix: &[String], args: &[&str]) -> Option<String> {
-    let mut command = Command::new(program);
+    let mut command = Command::new(crate::spawn::native_path(program));
     command.args(prefix).args(args).kill_on_drop(true);
+    crate::spawn::hide_console(&mut command);
     // A cold `lncrawl version` imports the whole crawler package. On Windows
     // with a mechanical disk that can take well over five seconds; timing out
     // is not fatal (the binary is still reported as found) but it hides the

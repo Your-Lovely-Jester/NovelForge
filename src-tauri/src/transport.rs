@@ -860,9 +860,10 @@ async fn curl_get(url: &str, kind: RequestKind) -> Result<RawResponse, String> {
         url.to_string(),
     ];
 
-    let output = tokio::process::Command::new("curl")
-        .args(&args)
-        .stdin(Stdio::null())
+    let mut command = tokio::process::Command::new("curl");
+    command.args(&args).stdin(Stdio::null());
+    crate::spawn::hide_console(&mut command);
+    let output = command
         .output()
         .await
         .map_err(|error| format!("system curl failed to start: {error}"))?;
@@ -962,11 +963,13 @@ fn curl_available() -> bool {
         1 => true,
         2 => false,
         _ => {
-            let available = std::process::Command::new("curl")
+            let mut command = std::process::Command::new("curl");
+            command
                 .arg("--version")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            let available = crate::spawn::hide_console_std(&mut command)
                 .status()
                 .map(|status| status.success())
                 .unwrap_or(false);

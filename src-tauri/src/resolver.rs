@@ -15,6 +15,7 @@ use crate::model::{
 };
 use crate::settings::{Settings, now_ms, now_secs};
 use crate::sources;
+use crate::spawn;
 use crate::tools::{ResolvedTool, resolve_tool};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -366,7 +367,7 @@ struct SourceBatch {
 async fn search_source(tool: &ResolvedTool, source: &str, query: &str) -> SourceBatch {
     let started = Instant::now();
     let label = source_label(source);
-    let mut command = Command::new(&tool.program);
+    let mut command = Command::new(spawn::native_path(&tool.program));
     command
         .args(&tool.prefix)
         .args([
@@ -385,6 +386,7 @@ async fn search_source(tool: &ResolvedTool, source: &str, query: &str) -> Source
         .env("TERM", "dumb")
         .env("COLUMNS", "240")
         .env("PYTHONUNBUFFERED", "1");
+    spawn::hide_console(&mut command);
 
     let output = match tokio::time::timeout(
         Duration::from_secs(SEARCH_COMMAND_BUDGET_SECS),
@@ -1964,12 +1966,13 @@ pub async fn list_manga_sources(settings: &Settings) -> AppResult<MangaSources> 
         AppError::msg("gallery-dl is not available. Open Guardrails to finish the setup.")
     })?;
 
-    let mut command = Command::new(&tool.program);
+    let mut command = Command::new(spawn::native_path(&tool.program));
     command
         .args(&tool.prefix)
         .arg("--list-extractors")
         .kill_on_drop(true)
         .env("NO_COLOR", "1");
+    spawn::hide_console(&mut command);
 
     let output = tokio::time::timeout(Duration::from_secs(30), command.output())
         .await
