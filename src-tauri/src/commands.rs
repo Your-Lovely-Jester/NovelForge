@@ -128,12 +128,24 @@ pub async fn fetch_novel_metadata(url: String) -> AppResult<NovelMetadata> {
 
 #[tauri::command]
 pub async fn fetch_novel_chapters(
+    app: AppHandle,
     state: State<'_, AppState>,
     url: String,
     refresh: Option<bool>,
 ) -> AppResult<NovelChapterIndex> {
     let settings = current_settings(&state);
-    metadata::fetch_chapter_index_for(&settings, &url, refresh.unwrap_or(false)).await
+    // A 3,000-chapter book needs about a minute of TOC pages at the safe
+    // request gap. Emit the page counter so the picker can show the walk
+    // moving instead of a static spinner.
+    let event_url = url.clone();
+    let report = move |page: u32, pages: u32| {
+        let _ = app.emit(
+            crate::model::EVENT_INDEX_PROGRESS,
+            serde_json::json!({ "url": event_url, "page": page, "pages": pages }),
+        );
+    };
+    metadata::fetch_chapter_index_reporting(&settings, &url, refresh.unwrap_or(false), &report)
+        .await
 }
 
 #[tauri::command]
@@ -708,6 +720,24 @@ pub fn reveal_path(state: State<'_, AppState>, path: String) -> AppResult<()> {
     open_in_file_manager(&target)
 }
 
+/// Opens one file with the system handler (a CBZ in the comic reader, an EPUB
+/// in the ebook reader). `reveal_path` deliberately opens the folder instead,
+/// which is useless for the packed manga archive the library card links to.
+#[tauri::command]
+pub fn open_file(state: State<'_, AppState>, path: String) -> AppResult<()> {
+    let settings = state
+        .settings
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    let root = prepare_download_dir(&settings)?;
+    let target = paths::contained_path(&root, Path::new(&path))?;
+    if !target.is_file() {
+        return Err(AppError::msg(format!("Not a file: {}", target.display())));
+    }
+    open_in_file_manager(&target)
+}
+
 #[tauri::command]
 pub fn open_downloads(state: State<'_, AppState>) -> AppResult<()> {
     let settings = state
@@ -935,8 +965,11 @@ fn open_in_file_manager(target: &Path) -> AppResult<()> {
         "xdg-open"
     };
 
+    // Explorer is a shell API consumer and rejects verbatim `\\?\C:\...`
+    // paths; hand it the spelling the address bar accepts.
+    let target = crate::spawn::native_path(target);
     std::process::Command::new(program)
-        .arg(target)
+        .arg(&target)
         .spawn()
         .map_err(|error| {
             AppError::msg(format!(

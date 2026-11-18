@@ -293,6 +293,10 @@ pub struct LibraryNovel {
     pub source_url: Option<String>,
     pub modified: u64,
     pub epub_path: Option<String>,
+    /// Packed CBZ/ZIP for manga folders, when one exists beside the chapter
+    /// tree. `None` for novels (their EPUB is `epub_path`).
+    #[serde(default)]
+    pub archive_path: Option<String>,
     /// True when this folder can be retried/updated through the webnovel
     /// pipeline (structured EPUB with an http(s) source URL).
     pub retryable: bool,
@@ -724,6 +728,9 @@ pub const EVENT_LOG: &str = "download://log";
 pub const EVENT_PROGRESS: &str = "download://progress";
 pub const EVENT_STATUS: &str = "download://status";
 pub const EVENT_LIBRARY: &str = "library://changed";
+/// Emitted while a source's table of contents is walked page by page:
+/// `{ url, page, pages }`.
+pub const EVENT_INDEX_PROGRESS: &str = "novel://index-progress";
 /// Emitted when the window close button is pressed while downloads are live,
 /// so the frontend can show a confirmation dialog instead of losing the crawl.
 pub const EVENT_QUIT_REQUESTED: &str = "app://quit-requested";

@@ -84,6 +84,10 @@ export function NovelSearchPanel({
   const [chapterIndex, setChapterIndex] = useState<NovelChapterIndex | null>(null);
   const [chapterIndexLoading, setChapterIndexLoading] = useState(false);
   const [chapterIndexError, setChapterIndexError] = useState<string | null>(null);
+  const [indexProgress, setIndexProgress] = useState<{
+    page: number;
+    pages: number;
+  } | null>(null);
   const [chapterNonce, setChapterNonce] = useState(0);
   const [duplicatePrompt, setDuplicatePrompt] = useState<{
     url: string;
@@ -266,12 +270,35 @@ export function NovelSearchPanel({
 
   useEffect(() => {
     if (!selectedUrl) {
+      setIndexProgress(null);
+      return;
+    }
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void api
+      .onIndexProgress((event) => {
+        if (event.url !== selectedUrl) return;
+        setIndexProgress({ page: event.page, pages: event.pages });
+      })
+      .then((off) => {
+        if (active) dispose = off;
+        else off();
+      });
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [selectedUrl]);
+
+  useEffect(() => {
+    if (!selectedUrl) {
       chapterToken.current += 1;
       setChapterIndex(null);
       setChapterIndexError(null);
       setChapterIndexLoading(false);
       return;
     }
+    setIndexProgress(null);
     const token = ++chapterToken.current;
     const refresh = refreshNextIndex.current;
     refreshNextIndex.current = false;
@@ -1006,7 +1033,11 @@ export function NovelSearchPanel({
                         <button
                           type="button"
                           onClick={() => void startSelected()}
-                          disabled={manager.starting || !selection.valid}
+                          disabled={
+                            manager.starting ||
+                            chapterIndexLoading ||
+                            !selection.valid
+                          }
                           className="btn-primary h-9 shrink-0 px-4"
                         >
                           {manager.starting ? (
@@ -1021,6 +1052,7 @@ export function NovelSearchPanel({
                       <ChapterIndexPanel
                         index={chapterIndex}
                         loading={chapterIndexLoading}
+                        progress={chapterIndexLoading ? indexProgress : null}
                         error={chapterIndexError}
                         onRetry={() => setChapterNonce((value) => value + 1)}
                         onRefresh={() => {
@@ -1296,12 +1328,15 @@ function DuplicatePrompt({
 function ChapterIndexPanel({
   index,
   loading,
+  progress,
   error,
   onRetry,
   onRefresh,
 }: {
   index: NovelChapterIndex | null;
   loading: boolean;
+  /** Page counter for a paginated walk; `null` before the first page lands. */
+  progress: { page: number; pages: number } | null;
   error: string | null;
   onRetry: () => void;
   onRefresh: () => void;
@@ -1316,9 +1351,11 @@ function ChapterIndexPanel({
           </span>
         </div>
         {loading ? (
-          <span className="flex items-center gap-1.5 text-[10px] text-parchment-500">
+          <span className="flex items-center gap-1.5 font-mono text-[10px] tabular-nums text-parchment-500">
             <Loader2 className="h-2.5 w-2.5 animate-spin" strokeWidth={2} />
-            Reading every TOC page…
+            {progress
+              ? `TOC page ${progress.page} / ${progress.pages}`
+              : "Reading every TOC page…"}
           </span>
         ) : index ? (
           <span className="flex items-center gap-2 font-mono text-[10px] tabular-nums text-parchment-500">

@@ -31,10 +31,10 @@ use commands::{
     fetch_novel_chapters, fetch_novel_metadata, find_existing_download, get_app_info,
     get_diagnostics, get_download_details, get_hardcover_status, get_settings, get_tasks,
     get_transport_report, list_library, list_manga_sources, list_source_catalogue,
-    list_source_profiles, open_chapters, open_downloads, pause_download, probe_tool, resolve_title,
-    resume_download, resume_interrupted, retry_download, reveal_path, save_settings, search_books,
-    search_webnovels, set_hardcover_token, start_download, suggest_faster_source, update_download,
-    verify_path,
+    list_source_profiles, open_chapters, open_downloads, open_file, pause_download, probe_tool,
+    resolve_title, resume_download, resume_interrupted, retry_download, reveal_path, save_settings,
+    search_books, search_webnovels, set_hardcover_token, start_download, suggest_faster_source,
+    update_download, verify_path,
 };
 use model::EVENT_QUIT_REQUESTED;
 use process::AppState;
@@ -226,6 +226,7 @@ pub fn run() {
             delete_partial_downloads,
             verify_path,
             reveal_path,
+            open_file,
             open_downloads,
             get_app_info,
             confirm_quit,

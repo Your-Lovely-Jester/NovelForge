@@ -2256,6 +2256,131 @@ pub fn parse_selection_serials(spec: &str) -> Option<Vec<u32>> {
 }
 
 /// Read a structured folder for the Home shelf / Library page.
+/// Rebuilds the packed archive from the expanded chapter tree beside it.
+///
+/// `export_cbz` writes both the archive and `chapters/<NNNN - label>/`. If the
+/// archive is gone afterwards — an over-eager antivirus, a sync tool, or a
+/// half-copied folder — the download would ship as loose images, which is not
+/// what the user asked for. The page tree holds the same bytes, so packing it
+/// again restores the deliverable without touching the source.
+pub fn repack_manga_chapters(
+    destination: &Path,
+    format: &str,
+    title: &str,
+) -> Result<PathBuf, String> {
+    let chapters_dir = destination.join("chapters");
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&chapters_dir)
+        .map_err(|error| format!("Cannot read {}: {error}", chapters_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    folders
+        .sort_by_key(|path| natural_key(&path.file_name().unwrap_or_default().to_string_lossy()));
+    if folders.is_empty() {
+        return Err("The chapter folder is empty, so no archive could be rebuilt".to_string());
+    }
+
+    let extension = if format.eq_ignore_ascii_case("zip") {
+        "zip"
+    } else {
+        "cbz"
+    };
+    let stem = sanitize_filename(title, 80);
+    let stem = if stem.is_empty() {
+        "manga".to_string()
+    } else {
+        stem
+    };
+    let archive_path = destination.join(format!("{stem}.{extension}"));
+    let file = File::create(&archive_path)
+        .map_err(|error| format!("Cannot create {}: {error}", archive_path.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = if extension == "zip" {
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+    } else {
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
+    };
+
+    for folder in &folders {
+        let name = folder
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Chapter".to_string());
+        let mut pages: Vec<PathBuf> = std::fs::read_dir(folder)
+            .map_err(|error| format!("Cannot read {}: {error}", folder.display()))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(is_image)
+            })
+            .collect();
+        pages.sort_by_key(|path| {
+            natural_key(&path.file_name().unwrap_or_default().to_string_lossy())
+        });
+        if pages.is_empty() {
+            continue;
+        }
+        for page in &pages {
+            let page_name = page
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let bytes = std::fs::read(page)
+                .map_err(|error| format!("Cannot read {}: {error}", page.display()))?;
+            zip.start_file(format!("{name}/{page_name}"), options)
+                .map_err(|error| format!("Cannot add manga page to archive: {error}"))?;
+            zip.write_all(&bytes)
+                .map_err(|error| format!("Cannot write manga page: {error}"))?;
+        }
+    }
+
+    zip.finish()
+        .map_err(|error| format!("Cannot finish manga archive: {error}"))?;
+    Ok(archive_path)
+}
+
+/// The packed archive that lives directly inside a structured folder.
+///
+/// Novels use `metadata.epub`; manga has no EPUB, so the export records
+/// `epub: None` and the packed CBZ/ZIP is the only reader-ready file. Pick the
+/// archive named after the title when there are several, otherwise the largest
+/// one (packed archives are orders of magnitude bigger than a stray download).
+fn library_archive(folder: &Path, metadata: &ExportMetadata) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(folder)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| {
+                    matches!(extension.to_ascii_lowercase().as_str(), "cbz" | "zip")
+                })
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let wanted = metadata.title.trim();
+    candidates.sort_by_key(|path| {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let size = std::fs::metadata(path)
+            .map(|value| value.len())
+            .unwrap_or_default();
+        (stem != wanted, u64::MAX - size)
+    });
+    candidates.into_iter().next()
+}
+
 pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
     let metadata = read_export_metadata(folder)?;
     // Old structured folders predate the chapter index files. Backfill them
@@ -2281,6 +2406,11 @@ pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
         let path = folder.join(name);
         path.is_file().then(|| path.to_string_lossy().to_string())
     });
+    // Manga folders hold the packed CBZ/ZIP beside the expanded chapter tree.
+    // Surfacing it is what makes "download a comic" land as an archive: the
+    // folder alone reads as a pile of images.
+    let archive_path =
+        library_archive(folder, &metadata).map(|path| path.to_string_lossy().to_string());
     let source_host = metadata
         .source_url
         .as_deref()
@@ -2303,6 +2433,7 @@ pub fn library_novel(folder: &Path) -> Option<crate::model::LibraryNovel> {
         source_url: metadata.source_url,
         modified,
         epub_path,
+        archive_path,
         retryable,
         provenance: metadata.provenance,
         disk_bytes: crate::storage::directory_bytes(folder),
@@ -3358,6 +3489,69 @@ mod tests {
         let plan = plan_audit(&audit, None, Some(1), None);
         assert!(!plan.ok);
         assert_eq!(plan.empty_positions, vec![1]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rebuilds_a_missing_archive_from_the_page_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-manga-repack-{}-{}",
+            std::process::id(),
+            crate::settings::now_ms()
+        ));
+        let destination = root.join("comic-0123abcd");
+        let png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00];
+        for (chapter, pages) in [("0002 - Chapter 2", 2), ("0001 - Chapter 1", 3)] {
+            let folder = destination.join("chapters").join(chapter);
+            std::fs::create_dir_all(&folder).unwrap();
+            for page in 1..=pages {
+                std::fs::write(folder.join(format!("{page:03}.png")), png).unwrap();
+            }
+        }
+
+        let archive = repack_manga_chapters(&destination, "cbz", "Comic").expect("rebuild archive");
+        assert_eq!(archive.file_name().unwrap(), "Comic.cbz");
+        let audit = audit_cbz(&archive).expect("audit");
+        assert_eq!(audit.chapters.len(), 2);
+        // Natural order, not the read_dir order.
+        assert!(audit.chapters[0].title.ends_with("Chapter 1"));
+        assert_eq!(audit.chapters[0].images.len(), 3);
+        assert_eq!(audit.chapters[1].images.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn library_prefers_the_archive_named_after_the_title() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-manga-archive-{}-{}",
+            std::process::id(),
+            crate::settings::now_ms()
+        ));
+        let folder = root.join("example-0123abcd");
+        std::fs::create_dir_all(folder.join("chapters/0001 - Chapter 1")).unwrap();
+        std::fs::write(
+            folder.join("chapters/0001 - Chapter 1/001.jpg"),
+            [0xff, 0xd8, 0xff],
+        )
+        .unwrap();
+        // A stray, larger archive must not win over the packed one.
+        std::fs::write(folder.join("unrelated.zip"), vec![0u8; 4096]).unwrap();
+        std::fs::write(folder.join("Example.cbz"), b"packed").unwrap();
+        std::fs::write(folder.join("cover.jpg"), [0xff, 0xd8, 0xff]).unwrap();
+
+        let metadata = ExportMetadata {
+            title: "Example".to_string(),
+            ..Default::default()
+        };
+        let archive = library_archive(&folder, &metadata).expect("archive");
+        assert_eq!(archive.file_name().unwrap(), "Example.cbz");
+
+        // No archive at all is not an error; the card simply has no CBZ action.
+        std::fs::remove_file(folder.join("Example.cbz")).unwrap();
+        std::fs::remove_file(folder.join("unrelated.zip")).unwrap();
+        assert!(library_archive(&folder, &metadata).is_none());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -469,6 +469,17 @@ export function useDownloadManager() {
     [showNotice],
   );
 
+  const openFile = useCallback(
+    async (path: string) => {
+      try {
+        await api.openFile(path);
+      } catch (error) {
+        showNotice("error", "Could not open file", errorMessage(error));
+      }
+    },
+    [showNotice],
+  );
+
   const openChapters = useCallback(
     async (folder: string) => {
       try {
@@ -757,6 +768,7 @@ export function useDownloadManager() {
     saveSettings,
     verify,
     reveal,
+    openFile,
     openChapters,
     deleteNovel,
     cleanupEngineWork,

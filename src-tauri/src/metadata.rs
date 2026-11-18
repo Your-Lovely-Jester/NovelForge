@@ -882,6 +882,22 @@ fn index_cache_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|base| base.join("novelforge").join("index-cache"))
 }
 
+/// Serialises table-of-contents walks for one cache key. Held only for the
+/// walk itself, never while title enrichment borrows another source's index.
+fn index_walk_lock(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<
+        std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks
+        .entry(key.to_string())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 fn now_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -978,6 +994,12 @@ fn index_cache_key(url: &Url) -> String {
     format!("{host}|{canonical}")
 }
 
+/// Reports `(page, pages)` while a paginated table of contents is walked.
+///
+/// The safe request gap makes a 3,000-chapter book take about a minute, so the
+/// picker needs the page counter to prove the walk is moving rather than hung.
+pub type IndexProgress<'a> = &'a (dyn Fn(u32, u32) + Send + Sync);
+
 /// Index fetch with the app settings, so a source whose table of contents only
 /// numbers its chapters can borrow real chapter names from a verified other
 /// source.
@@ -986,7 +1008,17 @@ pub async fn fetch_chapter_index_for(
     raw_url: &str,
     refresh: bool,
 ) -> AppResult<NovelChapterIndex> {
-    fetch_chapter_index_with(settings, raw_url, refresh, true).await
+    fetch_chapter_index_with(settings, raw_url, refresh, true, None).await
+}
+
+/// Same as [`fetch_chapter_index_for`] but reports walk progress to the caller.
+pub async fn fetch_chapter_index_reporting(
+    settings: &Settings,
+    raw_url: &str,
+    refresh: bool,
+    progress: IndexProgress<'_>,
+) -> AppResult<NovelChapterIndex> {
+    fetch_chapter_index_with(settings, raw_url, refresh, true, Some(progress)).await
 }
 
 /// NF-044: the catalogue rows without the title passes. A partial download
@@ -998,7 +1030,7 @@ pub async fn fetch_chapter_numbers_for(
     settings: &Settings,
     raw_url: &str,
 ) -> AppResult<NovelChapterIndex> {
-    fetch_chapter_index_with(settings, raw_url, false, false).await
+    fetch_chapter_index_with(settings, raw_url, false, false, None).await
 }
 
 async fn fetch_chapter_index_with(
@@ -1006,6 +1038,7 @@ async fn fetch_chapter_index_with(
     raw_url: &str,
     refresh: bool,
     allow_enrichment: bool,
+    progress: Option<IndexProgress<'_>>,
 ) -> AppResult<NovelChapterIndex> {
     let url = validate_url(raw_url)?;
     let key = index_cache_key(&url);
@@ -1040,12 +1073,26 @@ async fn fetch_chapter_index_with(
         )));
     }
 
-    let mut index = match profile.parser {
-        ParserKind::NovelFire => fetch_novelfire_index(&client, &url).await,
-        ParserKind::NovelPhoenix => fetch_novelphoenix_index(&client, &url).await,
-        ParserKind::NovelFull => fetch_generic_index(&client, &url).await,
-        ParserKind::Generic => fetch_generic_index(&client, &url).await,
-    }?;
+    // One walk per book at a time. The transport gate spaces requests per
+    // host, so a duplicate walk (picker still loading when the download
+    // starts, or a second click on Refresh) does not run in parallel: it
+    // doubles the wall clock and re-fetches every page. Waiters re-check the
+    // cache below and return the finished index instead of walking again.
+    let walk_lock = index_walk_lock(&key);
+    let mut index = {
+        let _walking = walk_lock.lock().await;
+        // A waiter that arrived during the walk finds the finished cache here
+        // and never starts a second walk of the same pages.
+        match if refresh { None } else { cached_index(&key) } {
+            Some(index) => index,
+            None => match profile.parser {
+                ParserKind::NovelFire => fetch_novelfire_index(&client, &url, progress).await,
+                ParserKind::NovelPhoenix => fetch_novelphoenix_index(&client, &url, progress).await,
+                ParserKind::NovelFull => fetch_generic_index(&client, &url, progress).await,
+                ParserKind::Generic => fetch_generic_index(&client, &url, progress).await,
+            }?,
+        }
+    };
 
     if allow_enrichment && title_pass_needed(&index) {
         enrich_index_titles(settings, &mut index).await;
@@ -1061,6 +1108,7 @@ async fn fetch_chapter_index_with(
 async fn fetch_novelfire_index(
     client: &reqwest::Client,
     url: &Url,
+    progress: Option<IndexProgress<'_>>,
 ) -> AppResult<NovelChapterIndex> {
     let toc_url = novelfire_toc_url(url)?;
     let first_html = fetch_html(client, toc_url.as_str()).await?;
@@ -1076,15 +1124,22 @@ async fn fetch_novelfire_index(
         (first_page, last_page)
     };
 
+    if let Some(report) = progress {
+        report(1, last_page.max(1));
+    }
     let mut pages: Vec<(u32, Vec<NovelChapter>)> = vec![(1, first_page)];
     if last_page > 1 {
         let page_numbers: Vec<u32> = (2..=last_page).collect();
         let base = toc_url.clone();
-        let (results, failed) =
-            fetch_toc_pages(client, base, page_numbers, |document, base_url, page| {
-                parse_novelfire_chapters(document, base_url, page)
-            })
-            .await;
+        let (results, failed) = fetch_toc_pages(
+            client,
+            base,
+            page_numbers,
+            parse_novelfire_chapters,
+            progress,
+            last_page,
+        )
+        .await;
         if !failed.is_empty() {
             return Err(AppError::msg(format!(
                 "Chapter index incomplete: {} of {} table-of-contents page(s) could not be fetched ({}). Retry the source.",
@@ -1145,6 +1200,7 @@ fn novelfire_toc_url(url: &Url) -> AppResult<Url> {
 async fn fetch_novelphoenix_index(
     client: &reqwest::Client,
     url: &Url,
+    progress: Option<IndexProgress<'_>>,
 ) -> AppResult<NovelChapterIndex> {
     let mut clean = url.clone();
     clean.set_fragment(None);
@@ -1161,15 +1217,22 @@ async fn fetch_novelphoenix_index(
         (first_page, last_page)
     };
 
+    if let Some(report) = progress {
+        report(1, last_page.max(1));
+    }
     let mut pages: Vec<(u32, Vec<NovelChapter>)> = vec![(1, first_page)];
     if last_page > 1 {
         let page_numbers: Vec<u32> = (2..=last_page).collect();
         let base = clean.clone();
-        let (results, failed) =
-            fetch_toc_pages(client, base, page_numbers, |document, base_url, page| {
-                parse_novelphoenix_chapters(document, base_url, page)
-            })
-            .await;
+        let (results, failed) = fetch_toc_pages(
+            client,
+            base,
+            page_numbers,
+            parse_novelphoenix_chapters,
+            progress,
+            last_page,
+        )
+        .await;
         if !failed.is_empty() {
             return Err(AppError::msg(format!(
                 "Chapter index incomplete: {} of {} table-of-contents page(s) could not be fetched ({}). Retry the source.",
@@ -1250,7 +1313,11 @@ struct FetchedTocPage {
     chapters: Vec<NovelChapter>,
 }
 
-async fn fetch_generic_index(client: &reqwest::Client, url: &Url) -> AppResult<NovelChapterIndex> {
+async fn fetch_generic_index(
+    client: &reqwest::Client,
+    url: &Url,
+    progress: Option<IndexProgress<'_>>,
+) -> AppResult<NovelChapterIndex> {
     let toc_url = generic_toc_url(url);
     let html = fetch_html(client, toc_url.as_str()).await?;
     let (signals, mut chapters) = {
@@ -1277,12 +1344,18 @@ async fn fetch_generic_index(client: &reqwest::Client, url: &Url) -> AppResult<N
                 .page_template
                 .clone()
                 .unwrap_or_else(|| default_page_template(&toc_url));
+            if let Some(report) = progress {
+                report(1, expected);
+            }
             for page in 2..=expected {
                 let page_url = page_template_url(&template, page);
                 match fetch_generic_page(client, &page_url, &toc_url, page).await {
                     Some(fetched) => {
                         chapters.extend(fetched.chapters);
                         pagination.walked_pages += 1;
+                        if let Some(report) = progress {
+                            report(page, expected);
+                        }
                     }
                     None => failed_pages.push(page),
                 }
@@ -2202,6 +2275,8 @@ async fn fetch_toc_pages<F>(
     base: Url,
     pages: Vec<u32>,
     parse: F,
+    progress: Option<IndexProgress<'_>>,
+    total_pages: u32,
 ) -> (Vec<(u32, Vec<NovelChapter>)>, Vec<u32>)
 where
     F: Fn(&Html, &Url, u32) -> Vec<NovelChapter>,
@@ -2255,6 +2330,11 @@ where
 
         if let Some(parsed) = chapters {
             results.push((page, parsed));
+            // Report after the page is in hand: a counter that runs ahead of
+            // the walk would claim progress that has not happened yet.
+            if let Some(report) = progress {
+                report(page, total_pages.max(page));
+            }
         } else {
             failed.push(page);
         }
@@ -2935,6 +3015,7 @@ async fn enrich_chapter_titles(settings: &Settings, index: &mut NovelChapterInde
             &candidate.url,
             false,
             false,
+            None,
         ))
         .await
         else {
@@ -3955,6 +4036,15 @@ mod tests {
             title_lookup_attempted: false,
             title_recovery_attempted: false,
         }
+    }
+
+    #[test]
+    fn one_walk_lock_per_index_key() {
+        let first = index_walk_lock("novelphoenix.net|https://novelphoenix.net/a.html");
+        let again = index_walk_lock("novelphoenix.net|https://novelphoenix.net/a.html");
+        let other = index_walk_lock("novelphoenix.net|https://novelphoenix.net/b.html");
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert!(!std::sync::Arc::ptr_eq(&first, &other));
     }
 
     #[test]

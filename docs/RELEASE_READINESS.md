@@ -37,7 +37,7 @@ a port task (§5).
 | NF-048 persistent log + diagnostics | **DONE** | `emit_log` → `novelforge.log`, 5 MiB rotation, `get_diagnostics`, About → **Copy diagnostics** |
 | NF-049 error boundary | **DONE** | `src/components/ErrorBoundary.tsx`, mounted in `main.tsx` |
 | NF-050 single instance | **DONE** | `tauri-plugin-single-instance`, focuses the existing window |
-| NF-051 Windows process control | **DONE** | `terminate_process` / `force_kill_process`; `taskkill /PID /T [/F]`; pause/resume fail closed off Unix |
+| NF-051 Windows process control | **DONE** | `terminate_process` / `force_kill_process`; `taskkill /PID /T [/F]`; pause/resume move to the real Windows implementation in NF-065 |
 | NF-052 pinned/modular toolchain | **DONE** | `scripts/install-tools.sh`: pinned versions + `webnovel`/`manga`/`books`/`all` |
 | NF-053 fmt + clippy gate | **DONE** | `cargo fmt --check` clean; clippy clean; wired into `check.sh` and CI |
 | NF-054 ZIP asset path hardening | **DONE** | `export::safe_entry_path` |
@@ -46,6 +46,9 @@ a port task (§5).
 | NF-062 no console windows on Windows | **DONE** | `src-tauri/src/spawn.rs` (`CREATE_NO_WINDOW` for `tokio`/`std` commands); used by probes, searches, downloads, retry, curl and `taskkill` |
 | NF-063 lncrawl database inside the work dir | **DONE** | `spawn::native_path` strips the verbatim `\\?\` prefix at the process boundary; `lncrawl_data_env` pins `LNCRAWL_DATA_PATH` + `DATABASE_URL`; test `lncrawl_env_pins_the_database_to_the_work_dir` |
 | NF-064 diagnostics copy fallback | **DONE** | `src/lib/clipboard.ts` (Clipboard API → `execCommand`); About shows the report in a selectable textarea when both are blocked; 3 vitest cases |
+| NF-065 Windows pause/resume | **DONE** | `spawn::suspend_process_tree` / `resume_process_tree` snapshot the live tree (`CreateToolhelp32Snapshot`), suspend parents before children and call `NtSuspendProcess` / `NtResumeProcess` per member; a root failure rolls the tree back. `process::pause_process` / `resume_process` use it. Windows tests: `pause_stops_the_whole_tree_and_resume_releases_it` (launcher + worker prove a whole-tree stop), `pause_refuses_a_process_that_is_already_gone` |
+| NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds the packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ** button; `process_manga_download` logs `Comic archive · <absolute path> · <size>` and `export::repack_manga_chapters` rebuilds a missing archive from `chapters/` instead of leaving a folder of images |
+| NF-067 TOC walk visibility + one walk per book | **DONE** | `metadata::fetch_chapter_index_reporting` reports `(page, pages)`; `novel://index-progress` drives `TOC page N / M`; `index_walk_lock` serialises walks per cache key so a waiter returns the finished cache instead of re-walking; Start is disabled while the first index loads. The 700 ms/request floor is unchanged (~50 s for a 2,700-chapter book) |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
 | NF-058 Android | **OPEN (spike)** | §5; not a port |
 | NF-059 binary-only packaging / signing / GPL | **OPEN** | §6 |
@@ -53,7 +56,7 @@ a port task (§5).
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
 | NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
 
-Gate after the batch: **201 Rust lib tests + 2 integration + 36 frontend + 38
+Gate after the batch: **210 Rust lib tests + 2 integration + 39 frontend + 38
 Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production build
 green, and the personal-data/fixture scan clean.
 
@@ -127,7 +130,10 @@ with the message, a Reload button and Copy error, instead of a white window.
 - Unix: `SIGCONT` + `SIGTERM` to the process group, then `SIGKILL` after 250 ms.
 - Windows: `taskkill /PID <pid> /T` then `/F`; `/T` is required because the
   venv launcher owns the Python grandchild.
-- Pause/resume are Unix-only and now fail closed elsewhere.
+- Pause/resume are real on both platforms: Unix sends `SIGSTOP`/`SIGCONT` to the
+  group; Windows walks the tree and suspends every member (NF-065). Windows
+  cannot express this with one call, so the walk is required — suspending only
+  the `.cmd` launcher would leave `python.exe` downloading.
 - `install-tools.sh` pins `gallery-dl 1.32.20`, `click 8.5.1`,
   `nodriver 0.50.99`, `playwright 1.65.0`, `rich 15.0.0`, and lncrawl at commit
   `59b0382` on `dev` (reports 4.14.0). The tag `v4.14.0` is older and the last
@@ -211,7 +217,17 @@ Wine run as Windows validation.
 - [ ] Closing the window during a crawl shows the quit modal.
 - [ ] **Stop and quit** marks the job interrupted; relaunch restores the row; Resume
       works.
-- [ ] Pause shows an explicit unsupported-platform error, not a fake pause.
+- [ ] Pause actually stops the crawl on Windows: the chapter counter and log
+      stop moving for as long as it stays paused, and Resume continues from the
+      same chapter. The log shows `Process paused` / `Process resumed`; a failed
+      pause reports why and leaves the status `running`.
+- [ ] A manga download leaves `<Title>.cbz` beside the image folders, and the
+      Library card's **Open CBZ** opens it in the default reader. The log shows
+      `Comic archive · <absolute path> · <size>`. If the archive is missing,
+      the log shows `… is missing after export · rebuilding …`.
+- [ ] The chapter list shows `TOC page N / M` while it loads and does not
+      restart when Start download is pressed; the first load takes roughly
+      `pages × 0.75 s` (about a minute for a 3,000-chapter book).
 - [ ] Long paths: download root near `MAX_PATH` still writes chapter files.
 - [ ] `cargo fmt --check` and `clippy -D warnings` pass on Windows.
 - [ ] Single instance: second launch focuses the first window.

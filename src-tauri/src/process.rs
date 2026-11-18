@@ -851,14 +851,28 @@ pub fn active_job_count(state: &AppState) -> usize {
 fn pause_process(pid: u32) -> AppResult<()> {
     #[cfg(unix)]
     {
+        if pid == 0 {
+            return Err(AppError::msg(
+                "No crawl process is attached to this download",
+            ));
+        }
         signal_group(pid, libc::SIGSTOP);
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // `lncrawl` runs behind a `.cmd` shim, so the recorded pid is the
+        // launcher. Stopping only it would leave `python.exe` downloading;
+        // suspend the whole tree or report the failure.
+        spawn::suspend_process_tree(pid)
+            .map(|_| ())
+            .map_err(|error| AppError::msg(format!("Pause failed · {error}")))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         Err(AppError::msg(
-            "Pause is not supported on this platform yet. Cancel and start the download again, or use a Unix build.",
+            "Pause is not supported on this platform. Cancel and start the download again.",
         ))
     }
 }
@@ -866,14 +880,25 @@ fn pause_process(pid: u32) -> AppResult<()> {
 fn resume_process(pid: u32) -> AppResult<()> {
     #[cfg(unix)]
     {
+        if pid == 0 {
+            return Err(AppError::msg(
+                "No crawl process is attached to this download",
+            ));
+        }
         signal_group(pid, libc::SIGCONT);
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        spawn::resume_process_tree(pid)
+            .map(|_| ())
+            .map_err(|error| AppError::msg(format!("Resume failed · {error}")))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         Err(AppError::msg(
-            "Resume is not supported on this platform yet. Cancel and start the download again, or use a Unix build.",
+            "Resume is not supported on this platform. Cancel and start the download again.",
         ))
     }
 }
@@ -1580,9 +1605,10 @@ async fn run_job(
                 &app,
                 &job_id,
                 format!(
-                    "Packed {} · {}",
+                    "Packed {} · {} · {}",
                     file_name(&path),
-                    format_duration(pack_started.elapsed())
+                    format_duration(pack_started.elapsed()),
+                    path.display()
                 ),
             ),
             Err(error) => {
@@ -2618,20 +2644,83 @@ async fn process_manga_download(
         log_system(
             app,
             job_id,
-            "Structured manga export · image folders · metadata.json",
+            format!(
+                "Structured manga export · {} · image folders · metadata.json",
+                file_name(primary_path)
+            ),
         );
     }
     JobTimings::add(&mut timings.export, export_started.elapsed());
 
+    // The archive is the deliverable. If it is not on disk after the export
+    // (a policy/antivirus deletion, a sync tool, or a half-copied folder) the
+    // download would ship as loose images and read as "not a CBZ". Rebuild it
+    // from the page tree and say so, instead of reporting success for a folder
+    // of JPEGs.
+    let archive = if primary_path.is_file() {
+        primary_path.to_path_buf()
+    } else {
+        log_stderr(
+            app,
+            job_id,
+            format!(
+                "{} is missing after export · rebuilding it from the chapter pages",
+                file_name(primary_path)
+            ),
+        );
+        let format = primary_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("cbz");
+        let stem = primary_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(title);
+        match export::repack_manga_chapters(destination, format, stem) {
+            Ok(path) => {
+                log_system(
+                    app,
+                    job_id,
+                    format!("Rebuilt comic archive · {}", path.display()),
+                );
+                path
+            }
+            Err(error) => {
+                *export_failed = Some(format!(
+                    "The packed archive is missing and could not be rebuilt: {error}"
+                ));
+                log_stderr(
+                    app,
+                    job_id,
+                    format!("Comic archive rebuild failed: {error}"),
+                );
+                return;
+            }
+        }
+    };
+    log_system(
+        app,
+        job_id,
+        format!(
+            "Comic archive · {} · {}",
+            archive.display(),
+            crate::storage::human_bytes(
+                std::fs::metadata(&archive)
+                    .map(|value| value.len())
+                    .unwrap_or_default()
+            )
+        ),
+    );
+
     set_phase(state, app, job_id, TaskPhase::Verifying);
     let verify_started = Instant::now();
-    let mut report = verify::verify_any(primary_path, false);
+    let mut report = verify::verify_any(&archive, false);
     report.chapters_expected = expected;
     report.chapters_found = audit.chapters.len() as u32;
     report.has_cover = audit.cover_bytes.is_some();
     report.ok = report.ok && ok;
     report.detail = format!("{} · {}", report.detail, detail);
-    outputs.push(output_file(primary_path, Some(report)));
+    outputs.push(output_file(&archive, Some(report)));
     JobTimings::add(&mut timings.verify, verify_started.elapsed());
 
     if !ok {

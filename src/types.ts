@@ -386,6 +386,13 @@ export interface NovelChapterIndex {
   titleSource: string | null;
 }
 
+/** Live table-of-contents walk progress for the chapter picker. */
+export interface IndexProgressEvent {
+  url: string;
+  page: number;
+  pages: number;
+}
+
 export interface LibraryNovel {
   folder: string;
   title: string;
@@ -399,6 +406,8 @@ export interface LibraryNovel {
   sourceUrl: string | null;
   modified: number;
   epubPath: string | null;
+  /** Packed CBZ/ZIP for a manga folder; `null` when the folder has none. */
+  archivePath: string | null;
   retryable: boolean;
   provenance: string | null;
   diskBytes: number;

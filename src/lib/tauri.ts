@@ -12,6 +12,7 @@ import type {
   DownloadDetails,
   FasterSourceReport,
   HardcoverStatus,
+  IndexProgressEvent,
   LibraryNovel,
   LibraryResponse,
   LogEvent,
@@ -135,6 +136,7 @@ export const api = {
     invokeCommand<VerificationReport>("verify_path", { path }),
   revealPath: (path: string) =>
     invokeCommand<void>("reveal_path", { path }),
+  openFile: (path: string) => invokeCommand<void>("open_file", { path }),
   openDownloads: () => invokeCommand<void>("open_downloads"),
   getAppInfo: () => invokeCommand<AppInfo>("get_app_info"),
   getDiagnostics: () => invokeCommand<string>("get_diagnostics"),
@@ -148,6 +150,8 @@ export const api = {
     subscribe<StatusEvent>("download://status", handler),
   onLibraryChanged: (handler: () => void) =>
     subscribe<number>("library://changed", handler),
+  onIndexProgress: (handler: (event: IndexProgressEvent) => void) =>
+    subscribe<IndexProgressEvent>("novel://index-progress", handler),
   onQuitRequested: (handler: () => void) =>
     subscribe<null>("app://quit-requested", handler),
 };

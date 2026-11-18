@@ -58,6 +58,7 @@ function novel(overrides: Partial<LibraryNovel>): LibraryNovel {
     sourceUrl: null,
     modified: 1,
     epubPath: "01 - Fourth Wing.epub",
+    archivePath: null,
     retryable: false,
     provenance: null,
     diskBytes: 1,

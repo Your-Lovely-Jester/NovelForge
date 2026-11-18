@@ -5,6 +5,7 @@ import {
   BookOpen,
   CheckCircle2,
   Copy,
+  FileArchive,
   FolderOpen,
   Gauge,
   HardDrive,
@@ -367,15 +368,23 @@ export function LibraryPage({ manager }: { manager: DownloadManager }) {
                 verifying={verifying}
                 busy={busyFolder === novel.folder}
                 onOpen={() => void manager.reveal(novel.folder)}
-                onVerify={() =>
-                  novel.epubPath
-                    ? void verify(novel.epubPath, novel.title)
-                    : manager.showNotice(
-                        "error",
-                        "No EPUB to verify",
-                        "This folder has no bundled EPUB.",
-                      )
+                onArchive={
+                  novel.archivePath
+                    ? () => void manager.openFile(novel.archivePath as string)
+                    : undefined
                 }
+                onVerify={() => {
+                  const target = novel.epubPath ?? novel.archivePath;
+                  if (target) {
+                    void verify(target, novel.title);
+                  } else {
+                    manager.showNotice(
+                      "error",
+                      "Nothing to verify",
+                      "This folder has no bundled EPUB or archive.",
+                    );
+                  }
+                }}
                 onRetry={() => void quickAction(novel, "retry")}
                 onUpdate={() => void quickAction(novel, "update")}
                 onRefresh={() => setConfirm({ kind: "refresh", novel })}
@@ -664,6 +673,7 @@ function NovelCard({
   verifying,
   busy,
   onOpen,
+  onArchive,
   onVerify,
   onRetry,
   onUpdate,
@@ -679,6 +689,8 @@ function NovelCard({
   verifying: string | null;
   busy: boolean;
   onOpen: () => void;
+  /** Present only when the folder carries a packed CBZ/ZIP. */
+  onArchive?: () => void;
   onVerify: () => void;
   onRetry: () => void;
   onUpdate: () => void;
@@ -696,7 +708,7 @@ function NovelCard({
     : migrated
       ? "local EPUB"
       : "local";
-  const current = novel.epubPath === verifying;
+  const current = (novel.epubPath ?? novel.archivePath) === verifying;
   const progress =
     novel.chapterCount > 0
       ? Math.min(100, (novel.downloadedChapters / novel.chapterCount) * 100)
@@ -871,6 +883,17 @@ function NovelCard({
                 Faster source
               </button>
             )}
+            {onArchive && (
+              <button
+                type="button"
+                onClick={onArchive}
+                className="btn-secondary h-7 px-2.5"
+                title="Open the packed CBZ/ZIP in your comic reader"
+              >
+                <FileArchive className="h-3 w-3" strokeWidth={1.8} />
+                Open CBZ
+              </button>
+            )}
             <button
               type="button"
               onClick={onChapters}
@@ -879,7 +902,8 @@ function NovelCard({
             >
               <BookOpen className="h-3 w-3" strokeWidth={1.8} />
               Chapters
-            </button>            <button
+            </button>
+            <button
               type="button"
               onClick={onIndex}
               className="btn-secondary h-7 px-2.5"
