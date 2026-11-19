@@ -58,27 +58,38 @@ jobs:
           NOVELFORGE_COMMIT: ${{ github.sha }}
         run: npm run tauri build -- --bundles nsis
 
-      - name: Checksums
+      # The downloaded ZIP is what the README install block expands in the
+      # user's Downloads folder, so it carries the engine installer next to the
+      # app installer. Saved-page fixtures and test data stay out of it.
+      - name: Stage release ZIP
         shell: pwsh
         run: |
-          $files = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe"
-          if (-not $files) { throw "No installer produced" }
-          $lines = foreach ($f in $files) {
+          $stage = "release"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/bundle/nsis/*.exe" $stage
+          $scripts = Join-Path $stage "scripts"
+          New-Item -ItemType Directory -Force -Path (Join-Path $scripts "patches") | Out-Null
+          Copy-Item scripts/install-tools.ps1 $scripts
+          Copy-Item scripts/install-tools.sh $scripts
+          Copy-Item scripts/apply-lncrawl-patches.sh $scripts
+          Copy-Item scripts/patch_lncrawl_scraper.py $scripts
+          Copy-Item scripts/aget.py $scripts
+          Copy-Item scripts/patches/*.patch (Join-Path $scripts "patches")
+
+          $lines = foreach ($f in Get-ChildItem "$stage/*.exe") {
             $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($f.Name)"
           }
-          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
-          Get-Content SHA256SUMS.txt
+          $lines | Set-Content -Encoding ascii (Join-Path $stage "SHA256SUMS.txt")
+          Get-Content (Join-Path $stage "SHA256SUMS.txt")
 
-      # Upload before the tests so a Windows-only test failure cannot throw the
-      # installer away: the artifact still appears and the job goes red.
-      - name: Upload installer
+      # Upload before the tests so a Windows-only failure cannot throw the ZIP
+      # away: the artifact still appears and the job goes red.
+      - name: Upload release ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: novelforge-windows-nsis
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            SHA256SUMS.txt
+          name: novelforge-windows
+          path: release/
           if-no-files-found: error
           retention-days: 14
 

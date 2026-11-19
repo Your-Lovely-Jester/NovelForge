@@ -179,17 +179,22 @@ Wine run as Windows validation.
      aget and Playwright Chromium under `%LOCALAPPDATA%\novelforge`, writes
      `.cmd` shims into `%LOCALAPPDATA%\novelforge\bin`, and needs no
      administrator rights, no WSL, no `PATH` edit and no reboot.
-   - Install the **newest** `novelforge-windows-nsis` artifact. Builds after
+   - Install the **newest** `novelforge-windows` artifact. Builds after
      `c02e8c5` scan `%LOCALAPPDATA%\novelforge\bin`; an older installer only
      searches `PATH` and reports every tool as missing even after a successful
      bootstrap. About shows the build commit, so a stale install is visible.
+     The artifact ZIP carries `scripts/install-tools.ps1` beside the `.exe`, so
+     the README block can unpack, install the engines and launch the installer
+     without a source checkout.
    - Run the acceptance list below.
 2. **GitHub Actions `windows-latest`** for build, compile checks and packaging.
    `.github/workflows/windows-build.yml` runs `cargo fmt --check`,
    `cargo clippy -D warnings` (which compiles the `#[cfg(windows)]` branches),
-   `cargo test`, then `tauri build --bundles nsis` and uploads the `.exe` plus
-   `SHA256SUMS.txt` as the `novelforge-windows-nsis` artifact. Trigger it with
-   **Actions → windows-build → Run workflow** or by pushing a `v*` tag. It needs
+   `cargo test`, then `tauri build --bundles nsis` and stages a release ZIP with
+   the `.exe`, `SHA256SUMS.txt` and `scripts/` as the `novelforge-windows`
+   artifact. `.github/workflows/linux-build.yml` builds the AppImage and `.deb`
+   and stages the same layout as `novelforge-linux`. Trigger either with
+   **Actions → <workflow> → Run workflow** or by pushing a `v*` tag. They need
    no Windows ISO, no local VM and about 30 MB of transfer (source up, installer
    down).
 3. **A physical Windows machine**, if one is available, for the final

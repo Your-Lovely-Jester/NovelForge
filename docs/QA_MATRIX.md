@@ -27,7 +27,9 @@ That runs:
 `.github/workflows/ci.yml` runs the same steps on Linux.
 `.github/workflows/windows-build.yml` runs fmt, clippy, the full Rust test
 suite and `tauri build --bundles nsis` on `windows-latest`, and uploads the
-installer + SHA-256 manifest; it is the packaging gate for NF-057. Its
+installer + `scripts/` + SHA-256 manifest as the `novelforge-windows` ZIP;
+`.github/workflows/linux-build.yml` does the same for the AppImage and `.deb`
+as `novelforge-linux`. It is the packaging gate for NF-057. Its
 `cargo test` step is also the only place the `#[cfg(windows)]` tests run, so
 `spawn::tests::native_path_*` (the `\\?\` strip that fixed the lncrawl SQLite
 failure) is proven there rather than on Linux.

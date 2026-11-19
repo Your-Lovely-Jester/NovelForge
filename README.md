@@ -1,5 +1,7 @@
 # NovelForge
 
+![NovelForge — a private download studio for webnovels, manga and e-books](docs/images/banner.png)
+
 A private desktop download studio for **webnovels**, **manga** and **e-books**.
 NovelForge is a Tauri 2 shell over three battle-tested downloaders — `lncrawl`,
 `gallery-dl` and `aget` — with a dark glass UI, live process output, job
@@ -49,110 +51,93 @@ aget "<title or author>" --format epub --auto --output "<job dir>" --headless [-
 backend captures the printed artifact path (and falls back to recently modified
 artifacts) and moves the result into the job sandbox before verification.
 
+![The NovelForge pipeline: three engines feed an isolated job sandbox, a container check, and the local library](docs/images/pipeline.svg)
+
 ---
 
 ## Install
 
-### 1. Prerequisites
+Grab `novelforge-windows.zip` or `novelforge-linux.zip` from the newest
+**Actions → `windows-build` / `linux-build` → Artifacts** run (or from the
+release page, once one is attached). Leave the ZIP in your Downloads folder,
+then run one block: it unpacks the archive, installs the system packages,
+installs the three download engines, and launches the NovelForge installer.
 
-- **Rust** (stable) and **Node.js 20+**
-- **Python 3.10+** for all three engines (`lncrawl`, `gallery-dl`, `aget`)
+### Windows — PowerShell (not `cmd`)
 
-On Windows, install Python and Git without administrator rights:
-
-```powershell
-winget install -e --id Python.Python.3.12
-winget install -e --id Git.Git
-```
-
-On Arch:
-
-```bash
-sudo pacman -S --needed base-devel rust nodejs npm python git
-```
-
-On Debian/Ubuntu:
-
-```bash
-sudo apt install build-essential librust-dev nodejs npm python3-venv git
-```
-
-Tauri's own system dependencies (WebKitGTK, etc.) are listed in the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/).
-
-### 2. Download engines
-
-Linux and macOS:
-
-```bash
-./scripts/install-tools.sh
-```
-
-Windows (PowerShell, no administrator rights, no WSL):
+> Use **Windows PowerShell** or **PowerShell 7**. This block is not for
+> `cmd.exe` — `Expand-Archive` and the backslash paths do not work there.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1
-powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 webnovel
-powershell -ExecutionPolicy Bypass -File scripts\install-tools.ps1 all -SkipBrowser
+cd $HOME\Downloads
+Expand-Archive -Force .\novelforge-windows.zip .\novelforge
+cd .\novelforge
+
+winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+winget install -e --id Git.Git --accept-package-agreements --accept-source-agreements
+
+powershell -ExecutionPolicy Bypass -File .\scripts\install-tools.ps1
+
+$setup = Get-ChildItem .\NovelForge_*-setup.exe | Select-Object -First 1
+Start-Process $setup.FullName
 ```
 
-Both scripts install into user-owned locations and are safe to re-run:
+If `winget` had to install Python or Git, close and reopen PowerShell before the
+last two commands so the new `PATH` is visible. Everything installs under
+`%LOCALAPPDATA%\novelforge`; no administrator rights and no WSL are needed.
 
-| What        | Linux / macOS                                             | Windows |
-| ----------- | --------------------------------------------------------- | ------- |
-| `lncrawl`   | `~/.local/bin/lncrawl` → source checkout + venv under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\lncrawl.cmd` |
-| `gallery-dl`| `~/.local/bin/gallery-dl` → Python venv under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\gallery-dl.cmd` |
-| `aget`      | `~/.local/bin/aget` → venv + checkout under `~/.local/share/novelforge/tools/` | `%LOCALAPPDATA%\novelforge\bin\aget.cmd` |
-| Chromium    | Playwright browser cache (for `aget`)                     | `%LOCALAPPDATA%\ms-playwright` (for `aget`) |
-
-`-SkipBrowser` skips the ~170 MB Playwright Chromium download. LibGen and WeLib
-keep working; Anna's Archive and OceanOfPDF are reported as unavailable until
-Chromium is installed.
-
-The patch files are byte-sensitive. `.gitattributes` marks them `-text` so a
-Windows clone keeps LF; the installers additionally normalise them before
-applying, so an older clone with CRLF patches still works.
-
-`lncrawl` is installed from source at a pinned upstream commit (`59b0382` on
-`dev`, reporting 4.14.0) so NovelForge can apply the source patches in
-`scripts/patches/` (NovelFull AJAX catalogue and metadata selectors, Divine Dao
-Library's redesigned theme, and the NovelPing adapter). The `v4.14.0` tag is
-older than that commit and the last three patches do not apply to it.
-Re-running `scripts/apply-lncrawl-patches.sh` is safe and only applies missing
-patches.
-
-Make sure `~/.local/bin` is on `PATH` on Linux/macOS. NovelForge also accepts
-explicit paths in **Settings → Toolchain paths** if auto-discovery fails. On
-Windows no `PATH` edit is needed: the app searches
-`%LOCALAPPDATA%\novelforge\bin` directly.
-
-### 3. Run
+### Linux — Bash
 
 ```bash
-npm install
-npm run tauri dev
+cd ~/Downloads
+unzip -o novelforge-linux.zip -d novelforge
+cd novelforge
+
+if command -v pacman >/dev/null; then
+  sudo pacman -S --needed --noconfirm base-devel curl python git unzip
+elif command -v apt >/dev/null; then
+  sudo apt update && sudo apt install -y build-essential curl python3 python3-venv git unzip
+fi
+
+bash ./scripts/install-tools.sh
+
+chmod +x NovelForge_*.AppImage
+./NovelForge_*.AppImage
 ```
 
-Production build:
+The AppImage needs FUSE 2 on some distributions. If it refuses to start, run
+`./NovelForge_*.AppImage --appimage-extract-and-run`. A `.deb` is in the same
+ZIP if you prefer `sudo apt install ./novelforge_*.deb`.
+
+### What the blocks install
+
+| Step             | Windows                                   | Linux                                             |
+| ---------------- | ----------------------------------------- | ------------------------------------------------- |
+| System packages  | Python 3.12 + Git via `winget`            | Python, Git, curl, distro build tools             |
+| Engines          | `%LOCALAPPDATA%\novelforge\bin`           | `~/.local/bin` + `~/.local/share/novelforge/tools` |
+| App              | NSIS installer                            | AppImage / `.deb`                                 |
+
+`install-tools` installs `lncrawl` from a pinned source commit and applies the
+NovelForge patches, installs `gallery-dl` in its own virtualenv, and installs
+`aget` plus a headless Chromium (about 170 MB). It is safe to re-run.
+
+The ZIP also contains `SHA256SUMS.txt`. Verify the installer before running it:
+
+```powershell
+Get-FileHash .\NovelForge_*-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
 
 ```bash
-npm run tauri build
+sha256sum -c SHA256SUMS.txt
 ```
 
-Bundles land in `src-tauri/target/release/bundle/`.
+### Build from source
 
-Windows installers are built by `.github/workflows/windows-build.yml`
-(`windows-latest`, NSIS only — MSI is skipped because debloated Windows images
-often disable Windows Installer). Trigger it manually from **Actions →
-windows-build → Run workflow**, or push a `v*` tag. The `novelforge-windows-nsis`
-artifact contains the `.exe` and `SHA256SUMS.txt`.
-
-Frontend-only checks:
-
-```bash
-npm run build      # tsc --noEmit + vite build
-cd src-tauri && cargo check
-```
+The public release is installer-only; the source tree stays private. If you
+have access to it, `npm install && npm run tauri dev` runs the app in
+development mode and `npm run tauri build` writes bundles to
+`src-tauri/target/release/bundle/`.
 
 ---
 
@@ -346,7 +331,10 @@ novelforge/
 ├── scripts/check.sh               # offline gate: Rust + frontend + build
 ├── scripts/source-smoke.sh        # opt-in live source matrix
 ├── docs/QA_MATRIX.md              # offline/live coverage and merge gate
+├── docs/images/                   # README banner and pipeline artwork
 ├── .github/workflows/ci.yml       # frontend + Rust offline CI
+├── .github/workflows/linux-build.yml # AppImage + deb release ZIP
+├── .github/workflows/windows-build.yml # NSIS release ZIP
 ├── src/                           # React frontend
 │   ├── components/
 │   │   ├── dashboard/             # hero, control deck, task cards, rails
