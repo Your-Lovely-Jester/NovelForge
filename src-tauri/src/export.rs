@@ -605,6 +605,9 @@ pub fn export_epub(
     write_metadata(destination, &export)?;
     write_index_files(destination, &export)?;
     if !retitle.is_empty() {
+        // Close our read handle first: Windows refuses to replace a file while
+        // another handle to it is open, which silently skipped the rewrite.
+        drop(archive);
         // Best effort: the EPUB is only rewritten after the replacement has
         // been audited, and a failure leaves lncrawl's original in place. The
         // structured folder and index already carry the borrowed names.
@@ -741,6 +744,8 @@ pub(crate) fn retitle_epub(path: &Path, targets: &[(String, String)]) -> Result<
     writer
         .finish()
         .map_err(|error| format!("Cannot finish EPUB: {error}"))?;
+    // Windows cannot replace a file while this read handle is still open.
+    drop(archive);
 
     // Nothing actually differed (for example a re-export of a folder that was
     // already retitled): keep the original bytes.
@@ -3708,12 +3713,8 @@ mod tests {
         assert_eq!(chapter.title, "v01 c001 Longer");
         assert_eq!(chapter.pages, 4);
         assert_eq!(
-            chapter
-                .path
-                .strip_prefix(&destination)
-                .unwrap()
-                .to_string_lossy(),
-            "chapters/0001 - v01 c001 Longer.cbz"
+            chapter.path.strip_prefix(&destination).unwrap(),
+            Path::new("chapters/0001 - v01 c001 Longer.cbz")
         );
         assert!(!destination.join("chapters/0001 - v01 c001 Longer").exists());
 
@@ -3762,20 +3763,15 @@ mod tests {
         assert_eq!(repaired.archives.len(), 2);
         assert_eq!(repaired.built, 2);
         assert_eq!(repaired.removed, 2);
-        // Natural order, not the read_dir order.
+        // Natural order, not the read_dir order. Compare as `Path` so the
+        // platform separator (`\` on Windows) does not matter.
         assert_eq!(
-            repaired.archives[0]
-                .strip_prefix(&destination)
-                .unwrap()
-                .to_string_lossy(),
-            "chapters/0001 - Chapter 1.cbz"
+            repaired.archives[0].strip_prefix(&destination).unwrap(),
+            Path::new("chapters/0001 - Chapter 1.cbz")
         );
         assert_eq!(
-            repaired.archives[1]
-                .strip_prefix(&destination)
-                .unwrap()
-                .to_string_lossy(),
-            "chapters/0002 - Chapter 2.cbz"
+            repaired.archives[1].strip_prefix(&destination).unwrap(),
+            Path::new("chapters/0002 - Chapter 2.cbz")
         );
         // The expanded folders were replaced, not duplicated.
         assert!(!destination.join("chapters/0001 - Chapter 1").exists());
@@ -3906,7 +3902,7 @@ mod tests {
             novel
                 .archive_path
                 .as_deref()
-                .is_some_and(|path| path.ends_with("Example.cbz"))
+                .is_some_and(|path| Path::new(path).ends_with("Example.cbz"))
         );
 
         // Per-chapter archives are the delivered shape; the first one is the
@@ -3919,7 +3915,7 @@ mod tests {
             novel
                 .archive_path
                 .as_deref()
-                .is_some_and(|path| path.ends_with("chapters/0001 - Chapter 1.cbz"))
+                .is_some_and(|path| Path::new(path).ends_with("chapters/0001 - Chapter 1.cbz"))
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -3966,15 +3962,14 @@ mod tests {
                     .path
                     .strip_prefix(&destination)
                     .unwrap()
-                    .to_string_lossy()
-                    .to_string()
+                    .to_path_buf()
             })
             .collect::<Vec<_>>();
         assert_eq!(
             names,
             vec![
-                "chapters/0001 - v01 c001.cbz".to_string(),
-                "chapters/0002 - v01 c002.cbz".to_string()
+                PathBuf::from("chapters/0001 - v01 c001.cbz"),
+                PathBuf::from("chapters/0002 - v01 c002.cbz")
             ]
         );
         // One archive per chapter, and no parallel image tree.

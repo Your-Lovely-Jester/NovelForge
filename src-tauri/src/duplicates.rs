@@ -39,39 +39,47 @@ pub fn find_existing_download(root: &Path, source_url: &str) -> Option<ExistingD
         if export::normalize_source_url(metadata_url) != target {
             continue;
         }
-        let modified = entry
+        // Keep sub-second precision for ordering. `modified` is a display value
+        // in whole seconds, but two downloads can finish in the same second
+        // (and Windows file times are coarser than Linux's), so sorting on the
+        // truncated field picked the older folder.
+        let modified_at = entry
             .metadata()
             .ok()
             .and_then(|value| value.modified().ok())
             .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-            .map(|value| value.as_secs())
+            .map(|value| value.as_nanos())
             .unwrap_or_default();
+        let modified = (modified_at / 1_000_000_000) as u64;
         let epub_path = metadata.epub.as_ref().and_then(|name| {
             let path = folder.join(name);
             path.is_file().then(|| path.to_string_lossy().to_string())
         });
         let complete = export::export_is_complete(&metadata);
-        matches.push(ExistingDownload {
-            folder: folder.to_string_lossy().to_string(),
-            title: metadata.title,
-            source_url: metadata_url.to_string(),
-            chapter_count: metadata.chapter_count,
-            downloaded_chapters: metadata.downloaded_chapters,
-            complete,
-            modified,
-            epub_path,
-            matches: 1,
-        });
+        matches.push((
+            modified_at,
+            ExistingDownload {
+                folder: folder.to_string_lossy().to_string(),
+                title: metadata.title,
+                source_url: metadata_url.to_string(),
+                chapter_count: metadata.chapter_count,
+                downloaded_chapters: metadata.downloaded_chapters,
+                complete,
+                modified,
+                epub_path,
+                matches: 1,
+            },
+        ));
     }
 
-    matches.sort_by(|left, right| {
+    matches.sort_by(|(left_at, left), (right_at, right)| {
         right
             .complete
             .cmp(&left.complete)
-            .then_with(|| right.modified.cmp(&left.modified))
+            .then_with(|| right_at.cmp(left_at))
     });
     let total = matches.len() as u32;
-    matches.into_iter().next().map(|mut existing| {
+    matches.into_iter().next().map(|(_, mut existing)| {
         existing.matches = total;
         existing
     })

@@ -106,7 +106,7 @@ function response(overrides: Partial<BookSearchResponse>): BookSearchResponse {
 
 const status: HardcoverStatus = {
   configured: false,
-  path: "/home/test/.config/novelforge/hardcover-token",
+  path: "~/.config/novelforge/hardcover-token",
   detail: null,
 };
 

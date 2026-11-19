@@ -13,9 +13,9 @@ cd "$ROOT"
 status=0
 
 # 1. Personal home directories in product code and build inputs. Test files are
-#    excluded: they are not shipped and may legitimately use /home/test/...
-#    The trailing slash keeps import specifiers such as @/components/home/Hero
-#    from matching.
+#    excluded: they are not shipped and may legitimately use a test home
+#    directory. The trailing slash keeps import specifiers such as
+#    @/components/home/Hero from matching.
 hits="$(
   grep -rInE '/(home|Users)/[A-Za-z0-9._-]+/' \
     src src-tauri/src scripts/*.sh scripts/*.py scripts/*.ps1 \
@@ -27,6 +27,22 @@ hits="$(
 if [ -n "$hits" ]; then
   echo "Personal absolute paths found in product code:" >&2
   printf '%s\n' "$hits" >&2
+  status=1
+fi
+
+# 1b. Documentation, CI and test sources must not name a real home directory
+#     either. Placeholders such as `<user>`, `test`, `example` and CI's `runner`
+#     are allowed; anything else is treated as personal.
+personal_homes="$(
+  grep -rInE '[\\/](home|Users)[\\/][A-Za-z0-9._-]+[\\/]' \
+    README.md docs .github scripts src src-tauri/src src-tauri/tests \
+    2>/dev/null \
+    | grep -viE '[\\/](home|Users)[\\/](user|test|example|runner|runneradmin)[\\/]' \
+    || true
+)"
+if [ -n "$personal_homes" ]; then
+  echo "Personal home-directory paths found in docs, CI or tests:" >&2
+  printf '%s\n' "$personal_homes" >&2
   status=1
 fi
 

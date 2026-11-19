@@ -55,7 +55,7 @@ the roadmap.
 | NF-071 clear finished terminals | **DONE** | The Terminal dock exposes **Clear finished**: `clear_finished` removes terminal rows, their log lines are filtered out, active jobs remain, and the job filter resets if its target disappeared. Test `clears finished jobs while keeping the active row` |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
 | NF-059 binary-only packaging / signing / GPL | **OPEN (deferred)** | §6; do not start until the installer-only publishing question is answered |
-| NF-060 strip personal modifications | **DONE** | `scripts/check-personal-data.sh` (in `check.sh`) blocks `/home/<user>/` paths, bundle resources, non-`resources/` embeds and fixture markers; docs paths sanitised; `.gitattributes` export-ignores fixtures/measurements; see §7 |
+| NF-060 strip personal modifications | **DONE** | `scripts/check-personal-data.sh` (in `check.sh`) blocks real `/home/<user>/` and `C:\Users\<user>\` paths in product inputs, docs, CI and tests, bundle resources, non-`resources/` embeds and fixture markers; docs paths sanitised; `.gitattributes` export-ignores fixtures/measurements; see §7 |
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
 | NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
 
@@ -372,8 +372,8 @@ may stay, but it is test-only and should not be in the installer either.
 
 ### 7.2 Scrub from tracked files before handing the tree to a build
 
-- Hard-coded `/home/<user>/...` paths (search the whole tree, including
-  docs and scripts).
+- Hard-coded `/home/<user>/...` and `C:\Users\<user>\...` paths (search the
+  whole tree, including docs and scripts).
 - Personal download roots in `settings.json` examples and screenshots.
 - Personal source-limit overrides measured on this machine.
 - Any `NOVELFORGE_QA_*` environment values baked into scripts or docs.
