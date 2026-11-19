@@ -728,6 +728,20 @@ fn metadata_cover_url(url: &Url, html: &str, parser: ParserKind) -> Option<Strin
         .or(Some(raw))
 }
 
+/// Downloads an extractor-provided cover and returns it as a data URL.
+///
+/// gallery-dl reports the series poster as an absolute URL for some sources
+/// (mangafire) and as a bare filename for others (mangadex), so callers should
+/// only pass values that parse as http(s).
+pub(crate) async fn fetch_cover_data(raw_url: &str) -> Option<String> {
+    let raw_url = raw_url.trim();
+    if raw_url.is_empty() {
+        return None;
+    }
+    let client = http_client().ok()?;
+    fetch_cover(&client, Some(raw_url.to_string())).await
+}
+
 async fn fetch_cover(client: &reqwest::Client, raw_url: Option<String>) -> Option<String> {
     let raw_url = raw_url?;
     let url = Url::parse(&raw_url).ok()?;

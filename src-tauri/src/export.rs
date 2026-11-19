@@ -1401,6 +1401,15 @@ pub fn verification_from_plan(plan: &AuditPlan, has_cover: bool) -> ExportVerifi
     }
 }
 
+/// The cover a previous export already wrote, kept on repair runs where the
+/// gallery-dl work tree (and therefore the extractor poster) is gone.
+fn existing_cover(destination: &Path) -> Option<String> {
+    ["jpg", "jpeg", "png", "webp", "gif"]
+        .into_iter()
+        .map(|extension| format!("cover.{extension}"))
+        .find(|name| destination.join(name).is_file())
+}
+
 fn write_cover(
     destination: &Path,
     epub_cover: Option<&[u8]>,
@@ -1460,7 +1469,9 @@ pub struct MangaPackage {
     pub image_count: usize,
     /// Chapters whose archive carried no images.
     pub empty_chapters: usize,
-    /// First page of the first chapter, used for the library cover.
+    /// First page of the first chapter, used only as a last-resort library
+    /// cover when the extractor reports no series poster and the destination
+    /// has no cover from an earlier export.
     pub cover_bytes: Option<Vec<u8>>,
 }
 
@@ -1810,16 +1821,19 @@ pub fn export_manga_archives(
     selection: Option<&str>,
     verification: &ExportVerification,
 ) -> Result<ExportMetadata, String> {
-    let cover = package
-        .cover_bytes
-        .as_deref()
-        .and_then(|bytes| {
-            let extension = image_extension(bytes)?;
-            let name = format!("cover.{extension}");
-            std::fs::write(destination.join(&name), bytes).ok()?;
-            Some(name)
-        })
-        .or_else(|| write_cover(destination, None, metadata.cover.as_deref()));
+    // The extractor's series poster is the real cover. The first page of the
+    // first chapter is usually a scanlation credits card, so it only stands in
+    // when no poster could be downloaded and no earlier export left a cover.
+    let cover = write_cover(destination, None, metadata.cover.as_deref())
+        .or_else(|| existing_cover(destination))
+        .or_else(|| {
+            package.cover_bytes.as_deref().and_then(|bytes| {
+                let extension = image_extension(bytes)?;
+                let name = format!("cover.{extension}");
+                std::fs::write(destination.join(&name), bytes).ok()?;
+                Some(name)
+            })
+        });
 
     let mut chapters = Vec::new();
     for chapter in &package.chapters {
@@ -3986,6 +4000,57 @@ mod tests {
         let empty = root.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
         assert!(package_manga_directory(&empty, &destination, "cbz").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manga_export_prefers_the_extractor_poster_over_the_first_page() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-manga-cover-{}-{}",
+            std::process::id(),
+            crate::settings::now_ms()
+        ));
+        let source = root.join("gallery-dl/mangafire/Example/c001");
+        std::fs::create_dir_all(&source).unwrap();
+        let page = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01];
+        std::fs::write(source.join("001.png"), page).unwrap();
+
+        let destination = root.join("out");
+        std::fs::create_dir_all(&destination).unwrap();
+        let package =
+            package_manga_directory(&root.join("gallery-dl"), &destination, "cbz").expect("pack");
+        assert_eq!(package.cover_bytes.as_deref(), Some(page.as_slice()));
+
+        let poster = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xee];
+        let mut metadata = NovelMetadata {
+            title: "Example".to_string(),
+            cover: Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(poster)
+            )),
+            ..Default::default()
+        };
+        let verification = ExportVerification {
+            ok: true,
+            ..Default::default()
+        };
+        export_manga_archives(&destination, &package, &metadata, None, &verification)
+            .expect("export");
+        assert_eq!(
+            std::fs::read(destination.join("cover.png")).unwrap(),
+            poster
+        );
+
+        // A repair run has no gallery-dl tree, so it keeps the cover that is
+        // already on disk instead of replacing it with a chapter page.
+        metadata.cover = None;
+        export_manga_archives(&destination, &package, &metadata, None, &verification)
+            .expect("repair export");
+        assert_eq!(
+            std::fs::read(destination.join("cover.png")).unwrap(),
+            poster
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

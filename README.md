@@ -55,13 +55,23 @@ artifacts) and moves the result into the job sandbox before verification.
 
 ---
 
+## Screenshots
+
+| Home | Downloads |
+| ---- | --------- |
+| ![Home: search across downloaded sources, with the library sidebar and quota](docs/images/app-home.png) | ![Downloads: live transfers and the streaming terminal dock](docs/images/app-downloads.png) |
+
+![Manga: pick a gallery-dl extractor, a chapter range and a CBZ container](docs/images/app-manga.png)
+
+---
+
 ## Install
 
-Grab `novelforge-windows.zip` or `novelforge-linux.zip` from the newest
-**Actions → `windows-build` / `linux-build` → Artifacts** run (or from the
-release page, once one is attached). Leave the ZIP in your Downloads folder,
-then run one block: it unpacks the archive, installs the system packages,
-installs the three download engines, and launches the NovelForge installer.
+Download `novelforge-windows.zip` or `novelforge-linux.zip` from the
+[latest release](https://github.com/Your-Lovely-Jester/NovelForge/releases/latest).
+Leave the ZIP in your Downloads folder, then run one block: it unpacks the
+archive, installs the system packages, installs the three download engines, and
+launches the NovelForge installer.
 
 ### Windows — PowerShell (not `cmd`)
 

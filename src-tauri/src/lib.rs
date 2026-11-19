@@ -42,8 +42,40 @@ use settings::Settings;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 
+/// True when every non-empty entry of a `PATH`-style value points inside the
+/// AppImage mount.
+fn points_into_bundle(appdir: &str, value: &str) -> bool {
+    let parts: Vec<&str> = value.split(':').filter(|part| !part.is_empty()).collect();
+    !appdir.is_empty() && !parts.is_empty() && parts.iter().all(|part| part.starts_with(appdir))
+}
+
+/// AppImage runtimes export `PYTHONHOME`/`PYTHONPATH`/`PERLLIB` pointing inside
+/// the mounted bundle. They exist for bundled language runtimes, but the
+/// download engines are separate Python installations: inheriting the values
+/// makes every engine fail with `ModuleNotFoundError: No module named
+/// 'encodings'`. NovelForge itself needs none of them, so the bundle-owned
+/// values are dropped once, before any engine can be spawned.
+fn drop_appimage_python_env() {
+    let Some(appdir) = std::env::var_os("APPDIR") else {
+        return;
+    };
+    let appdir = appdir.to_string_lossy();
+    for key in ["PYTHONHOME", "PYTHONPATH", "PERLLIB"] {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        if points_into_bundle(&appdir, &value.to_string_lossy()) {
+            // SAFETY: this is the first statement of `run`, before Tauri
+            // starts any thread, so nothing can be reading the environment
+            // concurrently.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    drop_appimage_python_env();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // A second launch must raise the running window instead of opening
@@ -259,4 +291,31 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::points_into_bundle;
+
+    #[test]
+    fn bundle_env_values_are_recognised() {
+        assert!(points_into_bundle(
+            "/tmp/.mount_abc",
+            "/tmp/.mount_abc/usr/"
+        ));
+        assert!(points_into_bundle(
+            "/tmp/.mount_abc",
+            "/tmp/.mount_abc/usr/share/pyshared/:"
+        ));
+        assert!(!points_into_bundle(
+            "/tmp/.mount_abc",
+            "/usr/lib/python3.14"
+        ));
+        assert!(!points_into_bundle(
+            "/tmp/.mount_abc",
+            "/tmp/.mount_other/usr/"
+        ));
+        assert!(!points_into_bundle("/tmp/.mount_abc", ""));
+        assert!(!points_into_bundle("", "/tmp/.mount_abc/usr/"));
+    }
 }

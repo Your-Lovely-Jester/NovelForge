@@ -2682,7 +2682,7 @@ async fn process_manga_download(
     log_system(app, job_id, format!("Manga audit · {detail}"));
 
     log_system(app, job_id, "Reading gallery-dl chapter metadata");
-    let metadata = work_dir
+    let mut metadata = work_dir
         .and_then(gallery_dl_metadata)
         .map(|mut metadata| {
             metadata.source_url = source_url.to_string();
@@ -2701,13 +2701,29 @@ async fn process_manga_download(
             ..Default::default()
         });
 
+    // gallery-dl reports the series poster next to the chapter images. Fetch
+    // it here so `export_manga_archives` can use the real cover instead of the
+    // first page of chapter one (which is usually a scanlation credits card).
+    if let Some(cover_url) = metadata.cover.take() {
+        metadata.cover = metadata::fetch_cover_data(&cover_url).await;
+        log_system(
+            app,
+            job_id,
+            if metadata.cover.is_some() {
+                "Series cover · downloaded from the extractor poster"
+            } else {
+                "Series cover · poster unavailable, using the first page"
+            },
+        );
+    }
+
     let verification = ExportVerification {
         ok,
         chapters_expected: expected,
         chapters_found: package.chapters.len() as u32,
         empty_chapters: Vec::new(),
         missing_chapters: Vec::new(),
-        has_cover: package.cover_bytes.is_some(),
+        has_cover: package.cover_bytes.is_some() || metadata.cover.is_some(),
         detail: detail.clone(),
     };
     set_phase(state, app, job_id, TaskPhase::Exporting);
@@ -4672,7 +4688,15 @@ fn gallery_dl_metadata(work_dir: &Path) -> Option<NovelMetadata> {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        cover: None,
+        // Some extractors (mangafire) put the series poster here. The value is
+        // only usable when it is an absolute URL: mangadex reports a bare
+        // filename that needs an uploads host this app does not know.
+        cover: data
+            .get("cover")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+            .map(str::to_string),
         aliases: Vec::new(),
     })
 }
@@ -5850,7 +5874,8 @@ mod artifact_tests {
                 "artist": ["B. Artist"],
                 "lang": "en",
                 "tags": ["Action", "Drama"],
-                "description": "A real description."
+                "description": "A real description.",
+                "cover": "https://static.example.test/series/poster.jpg"
             }"#,
         )
         .expect("write info");
@@ -5862,6 +5887,20 @@ mod artifact_tests {
         assert_eq!(metadata.tags, vec!["Action", "Drama"]);
         assert_eq!(metadata.language.as_deref(), Some("en"));
         assert_eq!(metadata.synopsis.as_deref(), Some("A real description."));
+        // mangafire reports an absolute poster URL; it is the series cover.
+        assert_eq!(
+            metadata.cover.as_deref(),
+            Some("https://static.example.test/series/poster.jpg")
+        );
+
+        // mangadex reports a bare upload filename, which is not a poster URL.
+        std::fs::write(
+            chapter.join("info.json"),
+            br#"{"category": "mangadex", "manga": "Example Series", "cover": "abc.jpg"}"#,
+        )
+        .expect("rewrite info");
+        let metadata = gallery_dl_metadata(&root).expect("metadata");
+        assert_eq!(metadata.cover, None);
 
         let _ = std::fs::remove_dir_all(&root);
     }

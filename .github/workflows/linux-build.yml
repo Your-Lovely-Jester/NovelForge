@@ -2,7 +2,8 @@ name: linux-build
 
 # Produces the Linux release ZIP: an AppImage, a .deb and the engine installer.
 # Trigger it from Actions → linux-build → Run workflow, or push a v* tag.
-# Download the artifact named "novelforge-linux" when the job finishes.
+# Tag pushes also attach novelforge-linux.zip to the GitHub Release; manual runs
+# keep the artifact named "novelforge-linux".
 
 on:
   workflow_dispatch:
@@ -10,7 +11,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: linux-build-${{ github.ref }}
@@ -74,14 +75,32 @@ jobs:
           (cd release && sha256sum *.AppImage *.deb > SHA256SUMS.txt)
           cat release/SHA256SUMS.txt
 
-      # Upload before the tests so a test failure cannot throw the ZIP away.
-      - name: Upload release ZIP
+      # The artifact keeps a failed-tag build inspectable; the ZIP is what the
+      # release attaches for people who are not signed in to GitHub.
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: novelforge-linux
           path: release/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Package release ZIP
+        run: |
+          set -euo pipefail
+          (cd release && zip -r -9 ../novelforge-linux.zip .)
+          ls -lh novelforge-linux.zip
+
+      # Tag pushes publish the ZIP on the release; manual runs only keep the
+      # artifact above.
+      - name: Attach ZIP to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          files: novelforge-linux.zip
+          fail_on_unmatched_files: true
 
       - name: Rust tests (unit + offline integration)
         run: cargo test --manifest-path src-tauri/Cargo.toml
