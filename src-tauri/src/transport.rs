@@ -282,7 +282,11 @@ pub struct TransportReport {
     pub hosts: Vec<TransportHostReport>,
 }
 
+/// The body is all release builds consume; `status`, `via` and `elapsed` are
+/// read by the debug-only QA probes, so they are marked dead there instead of
+/// growing `#[cfg]` variants of the struct.
 #[derive(Debug)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub struct TransportResponse {
     pub status: u16,
     pub body: Vec<u8>,

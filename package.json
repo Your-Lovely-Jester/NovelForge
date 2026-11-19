@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.5",
   "description": "Private download studio for webnovels, manga and e-books",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",

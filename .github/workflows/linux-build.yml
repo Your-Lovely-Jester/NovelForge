@@ -66,9 +66,10 @@ jobs:
           mkdir -p release/scripts/patches
           cp src-tauri/target/release/bundle/appimage/*.AppImage release/
           cp src-tauri/target/release/bundle/deb/*.deb release/
+          cp LICENSE release/
           cp scripts/install-tools.sh scripts/install-tools.ps1 \
              scripts/apply-lncrawl-patches.sh scripts/patch_lncrawl_scraper.py \
-             scripts/aget.py release/scripts/
+             scripts/aget.py scripts/install-linux-desktop.sh release/scripts/
           cp scripts/patches/*.patch release/scripts/patches/
           (cd release && sha256sum *.AppImage *.deb > SHA256SUMS.txt)
           cat release/SHA256SUMS.txt

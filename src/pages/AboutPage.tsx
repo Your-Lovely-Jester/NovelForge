@@ -198,9 +198,10 @@ export function AboutPage({ manager }: { manager: DownloadManager }) {
               <span className="chip chip-vermilion">Optional</span>
             </div>
             <p className="mt-2 max-w-[640px] text-[12px] leading-relaxed text-parchment-500">
-              NovelForge is freeware: no ads, no account, no telemetry. If it
-              saves you a few hours of crawling, a one-off tip pays for test
-              machines, build time and keeping the three engines patched.
+              NovelForge is free and open source: no ads, no account, no
+              telemetry. If it saves you a few hours of crawling, a one-off tip
+              pays for test machines, build time and keeping the three engines
+              patched.
             </p>
             <p className="mt-1 font-mono text-[10.5px] text-parchment-600">
               ko-fi.com/zephyyyy

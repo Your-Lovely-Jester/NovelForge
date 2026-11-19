@@ -2,7 +2,7 @@ name: windows-build
 
 # Produces an unsigned NSIS installer without a local Windows VM.
 # Trigger it from Actions → windows-build → Run workflow, or push a v* tag.
-# Download the artifact named "novelforge-windows-nsis" when the job finishes.
+# Download the artifact named "novelforge-windows" when the job finishes.
 
 on:
   workflow_dispatch:
@@ -67,6 +67,7 @@ jobs:
           $stage = "release"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "src-tauri/target/release/bundle/nsis/*.exe" $stage
+          Copy-Item "LICENSE" $stage
           $scripts = Join-Path $stage "scripts"
           New-Item -ItemType Directory -Force -Path (Join-Path $scripts "patches") | Out-Null
           Copy-Item scripts/install-tools.ps1 $scripts

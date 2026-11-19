@@ -1,25 +1,32 @@
 # NovelForge — Release Readiness
 
 **Last updated:** 2026-11-19  
-**Applies to:** `0.1.5` binary-only release  
+**Applies to:** `0.1.5` installer release (GPL-3.0-or-later)  
 **Companion:** `docs/SOURCE_PIPELINE_BACKLOG.md` (NF-045 … NF-069), `docs/QA_MATRIX.md`
 
 ---
 
 ## 1. Decision and scope
 
-NovelForge will be published as a **compiled installer**, not as a source
-repository. The source tree stays private. This changes three things:
+NovelForge is released under **GPL-3.0-or-later** (`LICENSE`). This replaces the
+earlier installer-only / source-private direction, and it changes what a release
+may look like:
 
-1. Copyrighted test fixtures are no longer a **publication** blocker, but they
-   still must not be bundled into an installer, and they must not be copied into
-   a public release artifact of any kind.
-2. The GPL-derived lncrawl patches are still distributed inside the build
-   inputs. Binary-only distribution does **not** remove the GPL-3.0 obligation
-   attached to those derivative works (see §6).
-3. “Open source” must not be claimed anywhere in the README, About page, site
-   or store listing. The correct description is “freeware / source-available
-   on request” only if that is actually true.
+1. The license is copyleft, so anyone who passes a built installer to someone
+   else must also give them the complete corresponding source for that build.
+   While the repository stays private and no source tarball is attached, builds
+   may only be shared together with the source — they must not be published as
+   installer-only downloads.
+2. Copyrighted test fixtures are still a publication concern: they must not be
+   bundled into an installer, must not be copied into a public release artifact,
+   and the fixture tree must be reviewed before the repository itself is made
+   public.
+3. The GPL-derived lncrawl patches are part of the corresponding source. Their
+   source offer is satisfied by shipping `scripts/patches/` with the project
+   source (§6).
+4. “Open source” may be claimed: it is accurate for the project code. The
+   three engines keep their own licenses and are fetched from upstream, not
+   bundled.
 
 The release target is a **Linux alpha first**. Windows is validated next, on a
 real Windows machine or CI runner. NovelForge is desktop-only; Android is not on
@@ -54,12 +61,12 @@ the roadmap.
 | NF-070 manga progress counts pages | **DONE** | `work_stats` tracks pages per gallery-dl chapter folder and reads the extractor's `count` from `info.json`; `manga_file_percent` credits finished chapters plus the active chapter's page fraction, so the bar no longer jumps a whole chapter when the next folder opens. Tests `manga_progress_counts_pages_inside_the_active_chapter`, `manga_progress_falls_back_to_finished_chapter_average`, `manga_progress_without_a_page_baseline_does_not_invent_one`, `gallery_info_page_count_reads_the_extractor_count` |
 | NF-071 clear finished terminals | **DONE** | The Terminal dock exposes **Clear finished**: `clear_finished` removes terminal rows, their log lines are filtered out, active jobs remain, and the job filter resets if its target disappeared. Test `clears finished jobs while keeping the active row` |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
-| NF-059 binary-only packaging / signing / GPL | **OPEN (deferred)** | §6; do not start until the installer-only publishing question is answered |
+| NF-059 release packaging / signing / GPL source offer | **OPEN (deferred)** | §6; source-availability and signing must be settled before binaries leave this machine |
 | NF-060 strip personal modifications | **DONE** | `scripts/check-personal-data.sh` (in `check.sh`) blocks real `/home/<user>/` and `C:\Users\<user>\` paths in product inputs, docs, CI and tests, bundle resources, non-`resources/` embeds and fixture markers; docs paths sanitised; `.gitattributes` export-ignores fixtures/measurements; see §7 |
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
-| NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
+| NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; GPL requires a source offer next to every binary |
 
-Gate after the 0.1.5 batch: **219 Rust lib tests + 2 integration + 40 frontend +
+Gate after the 0.1.5 batch: **219 Rust lib tests + 2 integration + 41 frontend +
 38 Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production
 build green, and the personal-data/fixture scan clean.
 
@@ -295,7 +302,7 @@ work is planned or tracked.
 
 ---
 
-## 6. Binary-only packaging, licensing and signing
+## 6. Packaging, licensing and signing
 
 ### 6.1 What ships
 
@@ -306,10 +313,16 @@ work is planned or tracked.
 Each artifact gets a `SHA256SUMS.txt`. The release notes state the exact commit,
 tool versions and whether the build is unsigned.
 
+NovelForge is **GPL-3.0-or-later** (see `LICENSE`). Every artifact ships that
+file, and every artifact is paired with the corresponding source for its exact
+tag: either the public repository at `v0.1.5`, or a source tarball attached to
+the same release. Shipping the installer alone would not satisfy the license.
+
 ### 6.2 Third-party obligations
 
 | Component | License | Obligation |
 |---|---|---|
+| NovelForge | GPL-3.0-or-later | Ship `LICENSE` and the corresponding source for the exact build |
 | lncrawl / lightnovel-crawler | GPL-3.0 | Source offer for the patched work; the patches are derivative |
 | lncrawl-scraper patch | GPL-3.0-derived | Same as above |
 | gallery-dl | GPL-2.0-only | License text + source offer if redistributed |
@@ -317,21 +330,20 @@ tool versions and whether the build is unsigned.
 | Tauri / Rust crates | MIT/Apache-2.0 mostly | `THIRD_PARTY_NOTICES.md` generated from `cargo metadata` |
 | npm dependencies | per package | `THIRD_PARTY_NOTICES.md` from `npm ls --json` |
 
-The safe binary-only shape:
+The safe distribution shape:
 
 1. Do **not** bundle lncrawl/gallery-dl/aget checkouts in the installer.
 2. Ship a first-run installer that fetches them from upstream, applies the
    repository-owned patches locally, and records the exact commits.
-3. Publish `scripts/patches/*` and the patched-file diffs under **GPL-3.0** in
-   a small public `novelforge-patches` repository (or a `patches/` directory in
-   the release assets), with a written offer for the complete corresponding
-   source of the patched lncrawl work.
+3. Keep `scripts/patches/*` and the patched-file diffs in the NovelForge source
+   itself; the project's GPL-3.0-or-later source covers them, and the release
+   notes name the pinned upstream commit for each patched engine.
 4. Keep `aget` out of the default install and out of the bundled artifacts until
    its license is clarified upstream.
 5. Add `THIRD_PARTY_NOTICES.md` and show it in About.
 
 This is packaging guidance, not legal advice. Have the GPL split reviewed once
-before the first public binary.
+before the first public binary is handed to anyone outside the project.
 
 ### 6.3 Signing and updates
 

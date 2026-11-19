@@ -3,6 +3,7 @@ name = "novelforge"
 version = "0.1.5"
 description = "Private download studio for webnovels, manga and e-books"
 authors = ["NovelForge"]
+license = "GPL-3.0-or-later"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -101,13 +101,19 @@ fi
 
 bash ./scripts/install-tools.sh
 
-chmod +x NovelForge_*.AppImage
-./NovelForge_*.AppImage
+bash ./scripts/install-linux-desktop.sh ./NovelForge_*.AppImage --launch
 ```
+
+The desktop step copies the AppImage to `~/.local/bin/novelforge.AppImage`,
+installs its icon and writes `~/.local/share/applications/novelforge.desktop`, so
+NovelForge appears in the application launcher like any other app. It also adds
+a `novelforge` command and starts the app once. Re-run it after downloading a
+newer AppImage.
 
 The AppImage needs FUSE 2 on some distributions. If it refuses to start, run
 `./NovelForge_*.AppImage --appimage-extract-and-run`. A `.deb` is in the same
-ZIP if you prefer `sudo apt install ./novelforge_*.deb`.
+ZIP if you prefer `sudo apt install ./novelforge_*.deb`; the package manager
+writes the launcher entry itself.
 
 ### What the blocks install
 
@@ -115,7 +121,7 @@ ZIP if you prefer `sudo apt install ./novelforge_*.deb`.
 | ---------------- | ----------------------------------------- | ------------------------------------------------- |
 | System packages  | Python 3.12 + Git via `winget`            | Python, Git, curl, distro build tools             |
 | Engines          | `%LOCALAPPDATA%\novelforge\bin`           | `~/.local/bin` + `~/.local/share/novelforge/tools` |
-| App              | NSIS installer                            | AppImage / `.deb`                                 |
+| App              | NSIS installer                            | AppImage registered in the launcher / `.deb`      |
 
 `install-tools` installs `lncrawl` from a pinned source commit and applies the
 NovelForge patches, installs `gallery-dl` in its own virtualenv, and installs
@@ -134,10 +140,14 @@ sha256sum -c SHA256SUMS.txt
 
 ### Build from source
 
-The public release is installer-only; the source tree stays private. If you
-have access to it, `npm install && npm run tauri dev` runs the app in
-development mode and `npm run tauri build` writes bundles to
+NovelForge is free software under **GPL-3.0-or-later**. The complete source for
+every published build travels with the release — the matching tag in this
+repository or an attached source tarball. Run `npm install && npm run tauri dev`
+for development mode and `npm run tauri build` to write bundles to
 `src-tauri/target/release/bundle/`.
+
+On Linux, `bash ./scripts/install-linux-desktop.sh` with no arguments finds the
+freshly built AppImage and registers it in the launcher.
 
 ---
 
@@ -428,3 +438,21 @@ you are allowed to keep, follow each source's terms, and respect the law where
 you live. No DRM circumvention is included or supported. The engines are
 maintained by their own communities; NovelForge ships no catalogue data and
 makes no claim about availability.
+
+## License
+
+NovelForge is free software: you can redistribute it and/or modify it under the
+terms of the **GNU General Public License** as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+It is distributed in the hope that it will be useful, but **without any
+warranty**; without even the implied warranty of merchantability or fitness for
+a particular purpose. See [LICENSE](LICENSE) for the full text.
+
+Because the license is copyleft, anyone who distributes a modified NovelForge
+must also make the modified source available under the same terms.
+
+The three engines are **not** bundled: `install-tools` fetches them from their
+upstream projects, and each keeps its own license (lncrawl and gallery-dl are
+GPL, `aget` is installed from upstream and is not redistributed).

@@ -1075,9 +1075,11 @@ where
         while let Some(joined) = jobs.join_next().await {
             let (result, fetched) = match joined {
                 Ok(pair) => pair,
-                Err(error) => {
+                // The binding is only read by the debug-only trace; the
+                // underscore keeps release builds warning-free.
+                Err(_error) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("[resolve] candidate task failed: {error}");
+                    eprintln!("[resolve] candidate task failed: {_error}");
                     continue;
                 }
             };
@@ -1318,9 +1320,9 @@ async fn collect_author_pages(
             Ok((target, page)) => {
                 pages.insert(target, (page, None));
             }
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
-                eprintln!("[resolve] author page task failed: {error}");
+                eprintln!("[resolve] author page task failed: {_error}");
             }
         }
     }
@@ -1336,9 +1338,9 @@ async fn collect_author_pages(
         cache.observe(age);
         let page = match page {
             Ok(page) => page,
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
-                eprintln!("[resolve] author page {url} failed: {error}");
+                eprintln!("[resolve] author page {url} failed: {_error}");
                 unresolved.push(target);
                 continue;
             }
@@ -1377,6 +1379,7 @@ async fn collect_author_pages(
 /// Sites answer an unknown author slug with their home page, so both the
 /// canonical path and the stated author must agree with the query before the
 /// page (including an empty shelf) is believed.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 fn author_page_is_trusted(query: &str, url: &str, page: &metadata::AuthorPage) -> bool {
     if let Some(canonical) = page.canonical.as_deref()
         && !canonical.to_ascii_lowercase().contains("/author")

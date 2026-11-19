@@ -23,13 +23,16 @@ That runs:
 | Frontend component tests | `npm test` | Home shelf source filter labels, counts, filtering, vanished-source fallback; search partial-result/failure lists, zero hits, empty-query and direct-URL guards, cached-age label; Library incomplete-index warning, migrated entries and exact clicked-folder actions; persisted-task hydration; download size estimate, 300-chapter warning threshold and quota levels; resolver confidence helpers; Books series checklist, per-book selection/fetch, public-domain opt-in selection and source-failure rendering; diagnostics copy via the Clipboard API, its `execCommand` fallback and total failure; About's Ko-fi button calls the backend opener |
 | Frontend dead code + unused deps | `npm run knip` | unreferenced files, exports, types and dependencies; wired into `scripts/check.sh` and CI |
 | Frontend typecheck + bundle | `npm run build` | TypeScript and Vite production build |
+| Linux launcher registration | `bash ./scripts/install-linux-desktop.sh <AppImage>` | copies the bundle to `~/.local/bin`, extracts its icon, writes `~/.local/share/applications/novelforge.desktop` with an absolute `Exec` and `StartupWMClass=novelforge`, refreshes the desktop/icon caches; `--launch` starts the app. `bash -n` clean |
+| Release license | `LICENSE`, `package.json`, `Cargo.toml` | the project is GPL-3.0-or-later; both release ZIPs stage `LICENSE`, and the Linux ZIP also carries `scripts/install-linux-desktop.sh` |
 
 `.github/workflows/ci.yml` runs the same steps on Linux.
 `.github/workflows/windows-build.yml` runs fmt, clippy, the full Rust test
 suite and `tauri build --bundles nsis` on `windows-latest`, and uploads the
 installer + `scripts/` + SHA-256 manifest as the `novelforge-windows` ZIP;
 `.github/workflows/linux-build.yml` does the same for the AppImage and `.deb`
-as `novelforge-linux`. It is the packaging gate for NF-057. Its
+as `novelforge-linux`, including `LICENSE` and the launcher script. It is the
+packaging gate for NF-057. Its
 `cargo test` step is also the only place the `#[cfg(windows)]` tests run, so
 `spawn::tests::native_path_*` (the `\\?\` strip that fixed the lncrawl SQLite
 failure) is proven there rather than on Linux.
