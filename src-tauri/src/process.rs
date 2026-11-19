@@ -3742,7 +3742,11 @@ async fn progress_loop(
 
         let raw_percent = progress.percent.load(Ordering::Relaxed) as f32 / 100.0;
         let file_percent = if measuring_work && total > 0 && stats.chapters > 0 {
-            (stats.chapters as f32 / total as f32 * 100.0).min(99.0)
+            if engine == Engine::Manga {
+                manga_file_percent(&stats, total)
+            } else {
+                (stats.chapters as f32 / total as f32 * 100.0).min(99.0)
+            }
         } else {
             0.0
         };
@@ -4431,15 +4435,25 @@ struct WorkStats {
     bytes: u64,
     chapters: u32,
     images: u32,
+    /// Manga: pages already written into the chapter gallery-dl is working on.
+    active_pages: u32,
+    /// Manga: page count the extractor reported for that chapter (`info.json`).
+    active_expected_pages: u32,
+    /// Manga: pages across the chapters that are already finished.
+    finished_pages: u32,
 }
 
 /// One walk over the isolated crawler store gives both byte progress and the
 /// chapter/image file counts used when the engine suppresses its progress bars.
 /// lncrawl names its folders `chapters`/`images`; gallery-dl nests images one
 /// folder per chapter, so every image-bearing directory counts as a chapter.
+/// The same walk records manga pages per folder so the sampler can advance
+/// inside the chapter that is still being written.
 fn work_stats(path: &Path, engine: Engine) -> WorkStats {
     let mut stats = WorkStats::default();
-    let mut manga_chapters = std::collections::HashSet::<PathBuf>::new();
+    // `(pages, last write)` per chapter folder. The folder with the newest
+    // write is the one gallery-dl is filling; every other folder is finished.
+    let mut manga_chapters = HashMap::<PathBuf, (u32, SystemTime)>::new();
     for entry in WalkDir::new(path)
         .max_depth(6)
         .follow_links(false)
@@ -4456,7 +4470,14 @@ fn work_stats(path: &Path, engine: Engine) -> WorkStats {
             if is_manga_image(&file_name) {
                 stats.images += 1;
                 if let Some(parent) = entry.path().parent() {
-                    manga_chapters.insert(parent.to_path_buf());
+                    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let slot = manga_chapters
+                        .entry(parent.to_path_buf())
+                        .or_insert((0, modified));
+                    slot.0 += 1;
+                    if modified > slot.1 {
+                        slot.1 = modified;
+                    }
                 }
             }
             continue;
@@ -4475,8 +4496,56 @@ fn work_stats(path: &Path, engine: Engine) -> WorkStats {
     }
     if engine == Engine::Manga {
         stats.chapters = manga_chapters.len() as u32;
+        // Ties (coarse filesystem timestamps) resolve to the later folder so a
+        // test or a fast small chapter still advances in download order.
+        if let Some((active, (pages, _))) = manga_chapters
+            .iter()
+            .max_by(|left, right| left.1.1.cmp(&right.1.1).then_with(|| left.0.cmp(right.0)))
+        {
+            stats.active_pages = *pages;
+            stats.active_expected_pages =
+                gallery_info_page_count(&active.join("info.json")).unwrap_or(0);
+            stats.finished_pages = stats.images.saturating_sub(*pages);
+        }
     }
     stats
+}
+
+/// gallery-dl writes one `info.json` per chapter before the first page; its
+/// `count` field is the extractor's real page count for that chapter.
+fn gallery_info_page_count(path: &Path) -> Option<u32> {
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let count = data.get("count")?;
+    let value = count
+        .as_u64()
+        .or_else(|| count.as_str()?.trim().parse::<u64>().ok())?;
+    u32::try_from(value).ok().filter(|value| *value > 0)
+}
+
+/// Manga progress counted per page instead of per chapter folder. `total` is
+/// the number of selected chapters. The chapter being written is credited page
+/// by page against its `info.json` count (or the average of finished chapters
+/// when the extractor did not report one), so opening chapter 2 no longer adds
+/// a whole chapter to the bar before its first page lands.
+fn manga_file_percent(stats: &WorkStats, total: u32) -> f32 {
+    if total == 0 || stats.chapters == 0 {
+        return 0.0;
+    }
+    let finished_chapters = stats.chapters.saturating_sub(1);
+    let expected = if stats.active_expected_pages > 0 {
+        stats.active_expected_pages as f32
+    } else if finished_chapters > 0 {
+        stats.finished_pages as f32 / finished_chapters as f32
+    } else {
+        0.0
+    };
+    let partial = if expected > 0.5 {
+        (stats.active_pages as f32 / expected).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let done = finished_chapters as f32 + partial;
+    (done / total as f32 * 100.0).clamp(0.0, 99.0)
 }
 
 fn is_manga_image(name: &str) -> bool {
@@ -5811,12 +5880,83 @@ mod artifact_tests {
         std::fs::write(first.join("001.png"), b"page-one").expect("page");
         std::fs::write(first.join("002.png"), b"page-two").expect("page");
         std::fs::write(second.join("001.jpg"), b"page-three").expect("page");
-        std::fs::write(second.join("info.json"), b"{}").expect("metadata");
+        std::fs::write(second.join("info.json"), br#"{"count": 9}"#).expect("metadata");
 
         let stats = work_stats(&root.join("gallery-dl"), Engine::Manga);
         assert_eq!(stats.chapters, 2);
         assert_eq!(stats.images, 3);
-        assert_eq!(stats.bytes, 8 + 8 + 10 + 2);
+        assert_eq!(stats.bytes, 8 + 8 + 10 + 12);
+        // `second` is the newest chapter, so it is the active one.
+        assert_eq!(stats.active_pages, 1);
+        assert_eq!(stats.active_expected_pages, 9);
+        assert_eq!(stats.finished_pages, 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manga_progress_counts_pages_inside_the_active_chapter() {
+        let stats = WorkStats {
+            chapters: 2,
+            images: 21,
+            active_pages: 1,
+            active_expected_pages: 10,
+            finished_pages: 20,
+            ..WorkStats::default()
+        };
+        // One finished chapter plus 1/10 of chapter two over four selected
+        // chapters: 27.5%, not the 50% a per-folder counter would show.
+        let percent = manga_file_percent(&stats, 4);
+        assert!((percent - 27.5).abs() < 0.01, "percent was {percent}");
+    }
+
+    #[test]
+    fn manga_progress_falls_back_to_finished_chapter_average() {
+        let stats = WorkStats {
+            chapters: 3,
+            images: 31,
+            active_pages: 1,
+            active_expected_pages: 0,
+            finished_pages: 30,
+            ..WorkStats::default()
+        };
+        // 2 finished chapters × 15 pages + 1 page into chapter three, of five.
+        let expected = (2.0 + 1.0 / 15.0) / 5.0 * 100.0;
+        let percent = manga_file_percent(&stats, 5);
+        assert!((percent - expected).abs() < 0.01, "percent was {percent}");
+    }
+
+    #[test]
+    fn manga_progress_without_a_page_baseline_does_not_invent_one() {
+        let stats = WorkStats {
+            chapters: 1,
+            images: 8,
+            active_pages: 8,
+            active_expected_pages: 0,
+            finished_pages: 0,
+            ..WorkStats::default()
+        };
+        assert_eq!(manga_file_percent(&stats, 4), 0.0);
+    }
+
+    #[test]
+    fn gallery_info_page_count_reads_the_extractor_count() {
+        let root = std::env::temp_dir().join(format!(
+            "novelforge-info-count-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("create dir");
+        let number = root.join("number.json");
+        std::fs::write(&number, br#"{"count": 18}"#).expect("write number");
+        let text = root.join("text.json");
+        std::fs::write(&text, br#"{"count": "7"}"#).expect("write text");
+        let missing = root.join("missing.json");
+        std::fs::write(&missing, br#"{"title": "no count"}"#).expect("write missing");
+
+        assert_eq!(gallery_info_page_count(&number), Some(18));
+        assert_eq!(gallery_info_page_count(&text), Some(7));
+        assert_eq!(gallery_info_page_count(&missing), None);
 
         let _ = std::fs::remove_dir_all(&root);
     }

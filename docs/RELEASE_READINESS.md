@@ -1,7 +1,7 @@
 # NovelForge — Release Readiness
 
 **Last updated:** 2026-11-19  
-**Applies to:** `0.1.4` binary-only release  
+**Applies to:** `0.1.5` binary-only release  
 **Companion:** `docs/SOURCE_PIPELINE_BACKLOG.md` (NF-045 … NF-069), `docs/QA_MATRIX.md`
 
 ---
@@ -22,8 +22,8 @@ repository. The source tree stays private. This changes three things:
    on request” only if that is actually true.
 
 The release target is a **Linux alpha first**. Windows is validated next, on a
-real Windows machine or CI runner. Android is a separate product decision, not
-a port task (§5).
+real Windows machine or CI runner. NovelForge is desktop-only; Android is not on
+the roadmap.
 
 ---
 
@@ -50,15 +50,16 @@ a port task (§5).
 | NF-066 comic archive is the deliverable | **DONE** | `export::library_archive` finds a packed CBZ/ZIP beside the chapter tree and `LibraryNovel.archivePath` exposes it; new `open_file` command + **Open CBZ**/**Open CBZs** button; `process_manga_download` logs the archives and `export::repack_manga_chapters` repairs an older folder instead of leaving a pile of images. The series-wide shape is corrected by NF-068 |
 | NF-067 TOC walk visibility + one walk per book | **DONE** | `metadata::fetch_chapter_index_reporting` reports `(page, pages)`; `novel://index-progress` drives `TOC page N / M`; `index_walk_lock` serialises walks per cache key so a waiter returns the finished cache instead of re-walking; Start is disabled while the first index loads. The 700 ms/request floor is unchanged (~50 s for a 2,700-chapter book) |
 | NF-068 one CBZ per manga chapter | **DONE** | `export::package_manga_directory` writes `chapters/<NNNN - label>.cbz` and returns a `MangaPackage`; `process_manga_download` audits/verifies every archive and logs `Comic archives · N of M verified · <size> · <path>`; `export::repack_manga_chapters` converts expanded folders and a legacy series CBZ in place, removing the replaced copy only after a page-count read-back matches; `LibraryNovel.archiveCount` drives the card label. Tests `packages_gallery_dl_tree_into_one_cbz_per_chapter`, `rebuilds_chapter_archives_from_the_page_tree`, `splits_a_legacy_series_archive_into_chapter_archives`, `library_counts_only_per_chapter_archives` |
-| NF-069 book failures name the sources | **DONE** | `ErrorTail.keep_all_stdout` retains aget's per-source stdout, `book_failure_message` appends it to the job row, engine streams are written through `emit_log`, and `probe_aget` runs `--help` (20 s) so a broken engine is named in Settings; both Python children force `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`. Tests `book_failure_names_the_aget_sources`, `aget_source_lines_ignore_search_chatter` |
+| NF-069 book failures name the sources | **DONE** | `ErrorTail.keep_all_stdout` retains aget's per-source stdout, `book_failure_message` appends it to the job row, engine streams are written through `emit_log`, and `probe_aget` runs `--help` (20 s) so a broken engine is named in Settings; both Python children force `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`. Tests `book_failure_names_the_aget_sources`, `aget_source_lines_ignore_search_chatter`. **Book downloads themselves are an experiment, not a release gate** |
+| NF-070 manga progress counts pages | **DONE** | `work_stats` tracks pages per gallery-dl chapter folder and reads the extractor's `count` from `info.json`; `manga_file_percent` credits finished chapters plus the active chapter's page fraction, so the bar no longer jumps a whole chapter when the next folder opens. Tests `manga_progress_counts_pages_inside_the_active_chapter`, `manga_progress_falls_back_to_finished_chapter_average`, `manga_progress_without_a_page_baseline_does_not_invent_one`, `gallery_info_page_count_reads_the_extractor_count` |
+| NF-071 clear finished terminals | **DONE** | The Terminal dock exposes **Clear finished**: `clear_finished` removes terminal rows, their log lines are filtered out, active jobs remain, and the job filter resets if its target disappeared. Test `clears finished jobs while keeping the active row` |
 | NF-057 Windows runtime validation | **OPEN** | §4; Wine cannot test WebView2 |
-| NF-058 Android | **OPEN (spike)** | §5; not a port |
-| NF-059 binary-only packaging / signing / GPL | **OPEN** | §6 |
+| NF-059 binary-only packaging / signing / GPL | **OPEN (deferred)** | §6; do not start until the installer-only publishing question is answered |
 | NF-060 strip personal modifications | **DONE** | `scripts/check-personal-data.sh` (in `check.sh`) blocks `/home/<user>/` paths, bundle resources, non-`resources/` embeds and fixture markers; docs paths sanitised; `.gitattributes` export-ignores fixtures/measurements; see §7 |
 | NF-061 dead-code, redundancy and unused-file audit | **DONE** | `knip` (in `check.sh` + CI) / `cargo-machete` / `ruff` / `vulture` / `clippy`; removed `HeroArt.tsx`, 6 unused helpers, 11 unexported types, 8 CSS classes, 4 `cover-*.jpg`, 7 unused fixtures, `sources::for_url`, `ManifestItem.media_type`; deduped `civil_from_days`, `key_hash`, `is_hidden_path`, `hostFromUrl`, test `novel()`; see `docs/QA_MATRIX.md` §1 |
 | NF-024 public binary + donation channel | **OPEN** | Blocked by NF-057/059; direction already binary-only |
 
-Gate after the 0.1.4 batch: **215 Rust lib tests + 2 integration + 39 frontend +
+Gate after the 0.1.5 batch: **219 Rust lib tests + 2 integration + 40 frontend +
 38 Python**, clippy clean, `cargo fmt --check` clean, `knip` clean, production
 build green, and the personal-data/fixture scan clean.
 
@@ -234,11 +235,12 @@ Wine run as Windows validation.
       removes the replaced copy only after the page counts match, and the card
       switches to **Open CBZs**. A novel folder is refused with the EPUB
       explanation.
-- [ ] A book download produces a verified EPUB; when every source fails, the job
-      row names the sources (`aget: LibGen … · WeLib …`) instead of only
-      `Book not found`, and the same lines are in `novelforge.log` and
-      **Copy diagnostics**. A broken `aget` is reported in Settings by the
-      `--help` probe, not silently treated as found.
+- [ ] **Experiment (not a release gate):** a book download produces a verified
+      EPUB; when every source fails, the job row names the sources
+      (`aget: LibGen … · WeLib …`) instead of only `Book not found`, and the
+      same lines are in `novelforge.log` and **Copy diagnostics**. A broken
+      `aget` is reported in Settings by the `--help` probe, not silently treated
+      as found.
 - [ ] The chapter list shows `TOC page N / M` while it loads and does not
       restart when Start download is pressed; the first load takes roughly
       `pages × 0.75 s` (about a minute for a 3,000-chapter book).
@@ -280,34 +282,11 @@ Windows 10/11 VM or physical machine closes NF-057.
 
 ---
 
-## 5. Android: why this is a spike, not a port
+## 5. Android: removed from the roadmap
 
-NovelForge is a **process orchestrator**. Every engine is a Python program with
-a virtualenv and, for books, a Chromium driven by Playwright:
-
-| Engine | Runtime requirement |
-|---|---|
-| lncrawl | Python 3 + editable package + writable data dir |
-| gallery-dl | Python 3 + per-site extractors |
-| aget | Python 3 + Playwright Chromium + `nodriver` |
-
-Android applications cannot fork arbitrary Python executables from assets;
-`ProcessBuilder` is not available to normal apps, and Playwright Chromium is not
-shippable through the Play Store in that form. A Tauri mobile build would also
-need a WebView-compatible shell and a rewritten storage layer.
-
-Options to evaluate in a time-boxed spike:
-
-1. **Desktop/server companion.** Android app is a thin client to a NovelForge
-   instance on the user's LAN. Lowest backend risk; requires auth, pairing and
-   an HTTP API that does not exist today.
-2. **Native rewrite.** Reimplement crawlers in Rust and package them in the APK.
-   Large effort; loses lncrawl's 300+ adapters and gallery-dl's catalogue.
-3. **Termux-style bundle.** Ship an APK that depends on Termux packages. Fragile,
-   Play-Store hostile, and not a normal user experience.
-
-Recommendation: do not attempt Android for `0.1.0`. Write the spike as a
-separate document when the desktop release is stable.
+Android is out of scope. NovelForge is a desktop process orchestrator, and the
+2026-11 scope review removed the Android spike (NF-058) entirely. No Android
+work is planned or tracked.
 
 ---
 
@@ -462,7 +441,7 @@ keeps selectors, links and structure, and move real-page tests behind an opt-in
 - [ ] Release notes list version, commit, tool versions and known limitations.
 - [ ] State “unsigned build” if applicable.
 - [ ] State “no auto-update yet”.
-- [ ] Open issues for NF-024, NF-057, NF-058, NF-059.
+- [ ] Open issues for NF-024, NF-057, NF-059.
 
 ---
 

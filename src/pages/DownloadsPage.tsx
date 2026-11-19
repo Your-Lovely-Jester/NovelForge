@@ -204,6 +204,7 @@ export function DownloadsPage({ manager }: { manager: DownloadManager }) {
           activeJobId={manager.activeJobId}
           onSelectJob={manager.setActiveJobId}
           onClear={manager.clearLogs}
+          onClearFinished={() => void manager.clearFinished()}
           className="h-[380px] border-t-0"
         />
       </section>

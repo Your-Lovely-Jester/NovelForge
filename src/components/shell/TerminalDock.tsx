@@ -3,12 +3,13 @@ import {
   ChevronDown,
   Circle,
   Eraser,
+  ListX,
   PanelBottomClose,
   PanelBottomOpen,
   TerminalSquare,
 } from "lucide-react";
 import type { DownloadTask, LogEvent } from "@/types";
-import { cn, formatClock, isActive } from "@/lib/utils";
+import { cn, formatClock, isActive, isTerminal } from "@/lib/utils";
 
 export function TerminalDock({
   logs,
@@ -16,6 +17,7 @@ export function TerminalDock({
   activeJobId,
   onSelectJob,
   onClear,
+  onClearFinished,
   className,
 }: {
   logs: LogEvent[];
@@ -23,6 +25,7 @@ export function TerminalDock({
   activeJobId: string | null;
   onSelectJob: (id: string | null) => void;
   onClear: () => void;
+  onClearFinished: () => void;
   className?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -37,6 +40,7 @@ export function TerminalDock({
   }, [activeJobId, logs]);
 
   const active = tasks.some((task) => isActive(task.status));
+  const finished = tasks.filter((task) => isTerminal(task.status)).length;
 
   useEffect(() => {
     if (!pinned || collapsed) return;
@@ -110,6 +114,17 @@ export function TerminalDock({
             <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-2.5 w-2.5 -translate-y-1/2 text-parchment-600" />
           </div>
 
+          <button
+            type="button"
+            onClick={onClearFinished}
+            disabled={finished === 0}
+            className="flex h-6 items-center gap-1 border border-parchment-100/10 px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-parchment-500 transition-colors hover:border-parchment-100/22 hover:text-parchment-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-parchment-100/10 disabled:hover:text-parchment-500"
+            aria-label="Clear finished terminals"
+            title="Remove finished jobs and their output"
+          >
+            <ListX className="h-3 w-3" strokeWidth={1.8} />
+            <span className="hidden sm:inline">Clear finished</span>
+          </button>
           <button
             type="button"
             onClick={onClear}

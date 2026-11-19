@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDownloadManager } from "@/hooks/useDownloadManager";
 import { DownloadsPage } from "@/pages/DownloadsPage";
@@ -18,6 +18,7 @@ vi.mock("@/lib/tauri", () => ({
     onLibraryChanged: vi.fn(async () => () => {}),
     onQuitRequested: vi.fn(async () => () => {}),
     resumeInterrupted: vi.fn(),
+    clearFinished: vi.fn(),
   },
 }));
 
@@ -132,5 +133,39 @@ describe("download task hydration after an app restart", () => {
     expect(
       screen.getByRole("button", { name: "Resume interrupted download" }),
     ).toBeInTheDocument();
+  });
+
+  it("clears finished jobs while keeping the active row", async () => {
+    const finished = task({
+      id: "finished-1",
+      title: "Old download",
+      status: "completed",
+      phase: "completed",
+      progress: 100,
+      createdAt: 2,
+    });
+    const running = task({
+      id: "running-1",
+      title: "Current download",
+      status: "running",
+      phase: "downloadingChapters",
+      progress: 30,
+      createdAt: 3,
+    });
+    vi.mocked(api.getTasks).mockResolvedValue([finished, running]);
+    vi.mocked(api.clearFinished).mockResolvedValue([running]);
+
+    render(<Harness />);
+    await screen.findAllByText("Old download");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear finished terminals" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("Old download")).not.toBeInTheDocument(),
+    );
+    expect(screen.getAllByText("Current download").length).toBeGreaterThan(0);
+    expect(api.clearFinished).toHaveBeenCalledTimes(1);
   });
 });

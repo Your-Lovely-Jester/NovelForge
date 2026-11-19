@@ -423,7 +423,13 @@ export function useDownloadManager() {
   const clearFinished = useCallback(async () => {
     try {
       const remaining = await api.clearFinished();
+      const keep = new Set(remaining.map((task) => task.id));
       setTasks(remaining);
+      // Finished terminal output belongs to the row that just disappeared;
+      // keeping it would leave an orphan job in the selector and stack output
+      // from every old download forever.
+      setLogs((current) => current.filter((entry) => keep.has(entry.jobId)));
+      setActiveJobId((current) => (current && !keep.has(current) ? null : current));
     } catch (error) {
       showNotice("error", "Could not clear finished tasks", errorMessage(error));
     }
