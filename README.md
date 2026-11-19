@@ -14,8 +14,6 @@ controls and strict container verification before anything reaches your shelf.
   `application/epub+zip`. Books additionally enforce OCF ordering. Invalid
   containers are deleted immediately and the job is reported as rejected.
 
-[![Support NovelForge on Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/zephyyyy)
-
 ---
 
 ## Stack
@@ -422,14 +420,6 @@ so the keep/cleanup path can be inspected.
 | Books opens a browser or hangs | Re-run the Playwright step: `~/.local/share/novelforge/tools/aget-venv/bin/python -m playwright install chromium`. `--headless` is always passed. |
 | Webnovel reports success but no file | Check the terminal for the printed artifact path; the backend imports from `~/.lncrawl/novels/**/artifacts/`. |
 | EPUB rejected for Books | `aget` returned a non-OCF file. The file is deleted by design; try another edition. |
-
-## Support
-
-NovelForge is freeware: no ads, no account, no telemetry, no paid tier. If it
-saves you a few hours of crawling, you can buy me a coffee — tips pay for test
-machines, build time and keeping the three engines patched.
-
-[Support NovelForge on Ko-fi →](https://ko-fi.com/zephyyyy)
 
 ## Responsible use
 
