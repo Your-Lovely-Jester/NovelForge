@@ -3,6 +3,7 @@ import {
   BookMarked,
   BookOpenText,
   CircuitBoard,
+  Coffee,
   Compass,
   Cpu,
   ExternalLink,
@@ -14,7 +15,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
-import type { DownloadManager } from "@/hooks/useDownloadManager";
+import { errorMessage, type DownloadManager } from "@/hooks/useDownloadManager";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/tauri";
 import { formatBytes } from "@/lib/utils";
@@ -121,6 +122,14 @@ export function AboutPage({ manager }: { manager: DownloadManager }) {
     setDiagState("manual");
   };
 
+  const openDonation = async () => {
+    try {
+      await api.openDonation();
+    } catch (error) {
+      manager.showNotice("error", "Could not open Ko-fi", errorMessage(error));
+    }
+  };
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -172,6 +181,39 @@ export function AboutPage({ manager }: { manager: DownloadManager }) {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="panel relative overflow-hidden p-5">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-vermilion-500/10 blur-3xl" />
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center border border-vermilion-500/30 bg-vermilion-500/[0.08]">
+            <Coffee className="h-5 w-5 text-vermilion-300" strokeWidth={1.7} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-display text-[21px] font-semibold leading-none text-parchment-50">
+                Buy me a coffee
+              </h2>
+              <span className="chip chip-vermilion">Optional</span>
+            </div>
+            <p className="mt-2 max-w-[640px] text-[12px] leading-relaxed text-parchment-500">
+              NovelForge is freeware: no ads, no account, no telemetry. If it
+              saves you a few hours of crawling, a one-off tip pays for test
+              machines, build time and keeping the three engines patched.
+            </p>
+            <p className="mt-1 font-mono text-[10.5px] text-parchment-600">
+              ko-fi.com/zephyyyy
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void openDonation()}
+            className="btn-primary h-10 shrink-0 gap-2 px-5 text-[12px]"
+          >
+            <Coffee className="h-4 w-4" strokeWidth={1.8} />
+            Support on Ko-fi
+          </button>
         </div>
       </section>
 

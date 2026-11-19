@@ -794,6 +794,42 @@ pub fn open_downloads(state: State<'_, AppState>) -> AppResult<()> {
     open_in_file_manager(&root)
 }
 
+/// The project's donation page. The URL lives in the backend instead of being
+/// passed in from the webview, so a compromised renderer cannot turn this into
+/// a generic protocol launcher.
+const DONATION_URL: &str = "https://ko-fi.com/zephyyyy";
+
+#[tauri::command]
+pub fn open_donation() -> AppResult<()> {
+    let url = url::Url::parse(DONATION_URL)
+        .map_err(|error| AppError::msg(format!("Bad URL: {error}")))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(AppError::msg("The donation URL must be https"));
+    }
+    open_external_url(url.as_str())
+}
+
+fn open_external_url(url: &str) -> AppResult<()> {
+    // `rundll32` hands the URL to the registered browser without going through
+    // cmd.exe, so `&` and spaces in a URL cannot become shell syntax.
+    let (program, prefix): (&str, Option<&str>) = if cfg!(target_os = "windows") {
+        ("rundll32.exe", Some("url.dll,FileProtocolHandler"))
+    } else if cfg!(target_os = "macos") {
+        ("open", None)
+    } else {
+        ("xdg-open", None)
+    };
+    let mut command = std::process::Command::new(program);
+    if let Some(prefix) = prefix {
+        command.arg(prefix);
+    }
+    command
+        .arg(url)
+        .spawn()
+        .map_err(|error| AppError::msg(format!("Could not open {url} in the browser: {error}")))?;
+    Ok(())
+}
+
 /// Resume the download an interrupted journal row points at. The stored
 /// `destination` is passed back through the normal retry path so the same
 /// verification, selection and fail-closed rules apply.
