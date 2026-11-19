@@ -351,7 +351,7 @@ novelforge/
 ├── scripts/check.sh               # offline gate: Rust + frontend + build
 ├── scripts/source-smoke.sh        # opt-in live source matrix
 ├── docs/QA_MATRIX.md              # offline/live coverage and merge gate
-├── docs/images/                   # README banner and pipeline artwork
+├── docs/images/                   # README banner, pipeline artwork and screenshots
 ├── .github/workflows/ci.yml       # frontend + Rust offline CI
 ├── .github/workflows/linux-build.yml # AppImage + deb release ZIP
 ├── .github/workflows/windows-build.yml # NSIS release ZIP
